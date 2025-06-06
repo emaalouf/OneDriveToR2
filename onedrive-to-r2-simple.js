@@ -119,23 +119,49 @@ class OneDriveToR2Simple {
                             
                             // Try different download button selectors
                             const selectors = [
+                                '[data-automationid="splitbuttonprimary"]', // Main download button
+                                'span[data-automationid="splitbuttonprimary"]', // Span variant
+                                '.ms-Button-flexContainer[data-automationid="splitbuttonprimary"]', // Flex container
+                                'i[data-icon-name="download"]', // Download icon
+                                '[data-icon-name="download"]', // Any element with download icon
                                 'button[data-automation-id="downloadCommand"]',
                                 '[data-automation-id="downloadButton"]',
                                 'button[aria-label*="Download"]',
                                 'button[title*="Download"]',
                                 '.ms-CommandBarItem-link[aria-label*="Download"]',
-                                '[data-icon-name="Download"]',
                                 '[data-automation-id*="download"]',
                                 '.ms-CommandBarItem[aria-label*="Download"]'
                             ];
                             
                             for (const selector of selectors) {
-                                const button = document.querySelector(selector);
-                                debugInfo.attempts.push({ selector, found: !!button, disabled: button?.disabled });
-                                if (button && !button.disabled) {
-                                    button.click();
-                                    resolve({ success: true, selector, debugInfo });
-                                    return;
+                                const element = document.querySelector(selector);
+                                debugInfo.attempts.push({ selector, found: !!element, disabled: element?.disabled });
+                                if (element) {
+                                    // If we found the element, try to click it or find its clickable parent
+                                    let clickTarget = element;
+                                    
+                                    // If it's not directly clickable, look for a clickable parent
+                                    if (element.tagName !== 'BUTTON' && element.getAttribute('role') !== 'button') {
+                                        // Look for parent button or clickable element
+                                        let parent = element.parentElement;
+                                        while (parent && parent !== document.body) {
+                                            if (parent.tagName === 'BUTTON' || 
+                                                parent.getAttribute('role') === 'button' ||
+                                                parent.onclick ||
+                                                parent.classList.contains('ms-Button') ||
+                                                parent.classList.contains('ms-CommandBarItem')) {
+                                                clickTarget = parent;
+                                                break;
+                                            }
+                                            parent = parent.parentElement;
+                                        }
+                                    }
+                                    
+                                    if (clickTarget && !clickTarget.disabled) {
+                                        clickTarget.click();
+                                        resolve({ success: true, selector, clickedElement: clickTarget.tagName, debugInfo });
+                                        return;
+                                    }
                                 }
                             }
                             
