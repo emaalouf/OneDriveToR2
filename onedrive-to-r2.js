@@ -61,8 +61,13 @@ class OneDriveToR2 {
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--disable-extensions',
-                '--no-first-run'
-            ]
+                '--no-first-run',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-ipc-flooding-protection'
+            ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
         });
         
         try {
@@ -165,12 +170,30 @@ class OneDriveToR2 {
             console.log(chalk.yellow(`⚠️  Filename extraction failed: ${error.message}`));
         }
         
+        // Extract OneDrive file ID and create proper download URLs
+        let fileId = null;
+        const idMatch = finalUrl.match(/[!&]([A-Z0-9!]+)(?:&|$)/);
+        if (idMatch) {
+            fileId = idMatch[1];
+            console.log(chalk.gray(`📋 Extracted file ID: ${fileId}`));
+        }
+        
         // Try multiple download URL patterns
-        const downloadUrls = [
-            finalUrl + (finalUrl.includes('?') ? '&' : '?') + 'download=1',
-            finalUrl.replace('/view', '/download'),
-            finalUrl.replace('onedrive.live.com', 'api.onedrive.com') + '/content'
-        ];
+        const downloadUrls = [];
+        
+        if (fileId) {
+            // Microsoft Graph API endpoints
+            downloadUrls.push(`https://api.onedrive.com/v1.0/shares/s!${fileId}/root/content`);
+            downloadUrls.push(`https://graph.microsoft.com/v1.0/shares/s!${fileId}/driveItem/content`);
+        }
+        
+        // Original URL with download parameter
+        downloadUrls.push(finalUrl + (finalUrl.includes('?') ? '&' : '?') + 'download=1');
+        
+        // Try replacing patterns
+        if (finalUrl.includes('onedrive.live.com')) {
+            downloadUrls.push(finalUrl.replace('onedrive.live.com', 'api.onedrive.com').replace(/\?.*/, '/content'));
+        }
         
         return {
             name: filename,
@@ -206,7 +229,15 @@ class OneDriveToR2 {
                     }
                 });
                 
-                console.log(chalk.green(`✅ Success with URL ${i + 1}`));
+                // Check if we got HTML instead of binary content
+                const contentType = response.headers['content-type'] || '';
+                const contentLength = parseInt(response.headers['content-length'] || '0');
+                
+                if (contentType.includes('text/html') || contentLength === 0) {
+                    throw new Error(`Got HTML page instead of file (${contentType})`);
+                }
+                
+                console.log(chalk.green(`✅ Success with URL ${i + 1} (${contentType}, ${contentLength} bytes)`));
                 break;
                 
             } catch (error) {
