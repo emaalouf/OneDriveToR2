@@ -85,6 +85,53 @@ class OneDriveToR2 {
             
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            
+            // Check if we're redirected to login page
+            const currentUrl = page.url();
+            if (currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com')) {
+                console.log(chalk.yellow('🔐 Detected login redirect. Trying anonymous access...'));
+                
+                // Try to access without authentication by modifying the URL
+                const originalUrl = new URL(url);
+                const fileId = originalUrl.searchParams.get('id');
+                
+                if (fileId) {
+                    // Try different anonymous access patterns
+                    const anonymousUrls = [
+                        `https://onedrive.live.com/embed?cid=${fileId}&authkey=!${fileId}`,
+                        `https://onedrive.live.com/download?cid=${fileId}`,
+                        `https://onedrive.live.com/redir?cid=${fileId}&authkey=!${fileId}`,
+                        url + '&authkey=anonymous'
+                    ];
+                    
+                    for (const testUrl of anonymousUrls) {
+                        try {
+                            console.log(chalk.blue(`🔄 Trying anonymous URL: ${testUrl}`));
+                            await page.goto(testUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+                            
+                            const newUrl = page.url();
+                            if (!newUrl.includes('login.live.com') && !newUrl.includes('login.microsoftonline.com')) {
+                                console.log(chalk.green('✅ Successfully bypassed login!'));
+                                break;
+                            }
+                        } catch (error) {
+                            console.log(chalk.yellow(`⚠️  Anonymous URL failed: ${error.message}`));
+                        }
+                    }
+                }
+                
+                // If still on login page, throw error with instructions
+                const finalUrl = page.url();
+                if (finalUrl.includes('login.live.com') || finalUrl.includes('login.microsoftonline.com')) {
+                    throw new Error(`OneDrive link requires authentication. Please:
+1. Open OneDrive in browser
+2. Right-click the folder "Grounding" 
+3. Select "Share" > "Anyone with the link"
+4. Set to "Can view" or "Can download"
+5. Copy the new public link and try again`);
+                }
+            }
+            
             await new Promise(resolve => setTimeout(resolve, 5000)); // Wait longer for OneDrive to load
             
             // Take a screenshot for debugging
@@ -251,59 +298,97 @@ class OneDriveToR2 {
                 const folderFiles = await page.evaluate(() => {
                     const files = [];
                     
-                    // Try multiple selectors for file items
-                    const fileSelectors = [
-                        '[data-automation-id="listItem"]',
-                        '.od-ItemTile',
-                        '[role="gridcell"]',
-                        '.ms-List-cell'
-                    ];
-                    
-                    let fileElements = [];
-                    for (const selector of fileSelectors) {
-                        fileElements = document.querySelectorAll(selector);
-                        if (fileElements.length > 0) break;
-                    }
-                    
-                    for (const element of fileElements) {
-                        try {
-                            // Extract filename
-                            let filename = null;
-                            const nameSelectors = [
-                                '[data-automation-id="fieldRendererFileName"] span',
-                                '.od-ItemName',
-                                '.ms-Link',
-                                'button[data-automation-id="fileItemName"]',
-                                '.file-name',
-                                'span[title]'
-                            ];
-                            
-                            for (const nameSelector of nameSelectors) {
-                                const nameEl = element.querySelector(nameSelector);
-                                if (nameEl && nameEl.textContent.trim()) {
-                                    filename = nameEl.textContent.trim();
+                    try {
+                        // Try multiple selectors for file items
+                        const fileSelectors = [
+                            '[data-automation-id="listItem"]',
+                            '.od-ItemTile',
+                            '[role="gridcell"]',
+                            '.ms-List-cell',
+                            '[data-automation-id="fileItem"]',
+                            '.ms-List-row'
+                        ];
+                        
+                        let fileElements = [];
+                        for (const selector of fileSelectors) {
+                            try {
+                                const elements = document.querySelectorAll(selector);
+                                if (elements && elements.length > 0) {
+                                    fileElements = Array.from(elements);
+                                    console.log(`Found ${fileElements.length} elements with selector: ${selector}`);
                                     break;
                                 }
-                                // Also try title attribute
-                                if (nameEl && nameEl.getAttribute('title')) {
-                                    filename = nameEl.getAttribute('title').trim();
-                                    break;
-                                }
+                            } catch (selectorError) {
+                                console.log(`Selector failed: ${selector}`, selectorError.message);
                             }
-                            
-                            if (filename && !filename.includes('..')) { // Skip parent directory links
-                                files.push({
-                                    name: filename,
-                                    element: element,
-                                    index: files.length
-                                });
-                            }
-                        } catch (error) {
-                            console.log('Error processing file element:', error);
                         }
-                    }
+                        
+                        if (!fileElements || fileElements.length === 0) {
+                            console.log('No file elements found with standard selectors, trying broader search...');
+                            // Fallback: look for any elements containing video file extensions
+                            const allElements = document.querySelectorAll('*');
+                            for (const element of allElements) {
+                                const text = element.textContent || '';
+                                if (text.match(/\.(mp4|avi|mov|mkv|wmv)$/i)) {
+                                    fileElements.push(element);
+                                }
+                            }
+                            console.log(`Found ${fileElements.length} elements with video extensions`);
+                        }
                     
-                    return files;
+                                            for (const element of fileElements) {
+                            try {
+                                // Extract filename
+                                let filename = null;
+                                const nameSelectors = [
+                                    '[data-automation-id="fieldRendererFileName"] span',
+                                    '.od-ItemName',
+                                    '.ms-Link',
+                                    'button[data-automation-id="fileItemName"]',
+                                    '.file-name',
+                                    'span[title]'
+                                ];
+                                
+                                for (const nameSelector of nameSelectors) {
+                                    const nameEl = element.querySelector(nameSelector);
+                                    if (nameEl && nameEl.textContent && nameEl.textContent.trim()) {
+                                        filename = nameEl.textContent.trim();
+                                        break;
+                                    }
+                                    // Also try title attribute
+                                    if (nameEl && nameEl.getAttribute('title')) {
+                                        filename = nameEl.getAttribute('title').trim();
+                                        break;
+                                    }
+                                }
+                                
+                                // If no filename found, try extracting from element text directly
+                                if (!filename) {
+                                    const elementText = element.textContent || '';
+                                    const videoMatch = elementText.match(/([^\/\\]+\.(mp4|avi|mov|mkv|wmv))/i);
+                                    if (videoMatch) {
+                                        filename = videoMatch[1];
+                                    }
+                                }
+                                
+                                if (filename && !filename.includes('..') && filename.length > 0) { // Skip parent directory links
+                                    files.push({
+                                        name: filename,
+                                        element: element,
+                                        index: files.length
+                                    });
+                                }
+                            } catch (elementError) {
+                                console.log('Error processing file element:', elementError.message);
+                            }
+                        }
+                        
+                        return files;
+                        
+                    } catch (mainError) {
+                        console.log('Error in folder file extraction:', mainError.message);
+                        return [];
+                    }
                 });
                 
                 console.log(chalk.gray(`📋 Found ${folderFiles.length} files in folder`));
@@ -561,14 +646,27 @@ class OneDriveToR2 {
         // Try multiple download URL patterns
         const downloadUrls = [];
         
+        // Extract more URL components
+        const urlObj = new URL(finalUrl);
+        const rawFileId = urlObj.searchParams.get('id');
+        const cid = urlObj.searchParams.get('cid');
+        
         if (fileId) {
             // Microsoft Graph API endpoints
             downloadUrls.push(`https://api.onedrive.com/v1.0/shares/s!${fileId}/root/content`);
             downloadUrls.push(`https://graph.microsoft.com/v1.0/shares/s!${fileId}/driveItem/content`);
         }
         
+        // OneDrive direct download patterns
+        if (cid && rawFileId) {
+            downloadUrls.push(`https://onedrive.live.com/download?cid=${cid}&id=${rawFileId}`);
+            downloadUrls.push(`https://onedrive.live.com/download?cid=${cid}&id=${rawFileId}&authkey=anonymous`);
+            downloadUrls.push(`https://onedrive.live.com/redir?cid=${cid}&id=${rawFileId}&authkey=download`);
+        }
+        
         // Original URL with download parameter
         downloadUrls.push(finalUrl + (finalUrl.includes('?') ? '&' : '?') + 'download=1');
+        downloadUrls.push(finalUrl.replace(/[?&]sb=[^&]*/, '').replace(/[?&]sd=[^&]*/, '') + '&download=1');
         
         // Try replacing patterns
         if (finalUrl.includes('onedrive.live.com')) {
