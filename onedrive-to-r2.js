@@ -85,24 +85,85 @@ class OneDriveToR2 {
             
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait longer for OneDrive to load
+            
+            // Take a screenshot for debugging
+            try {
+                await page.screenshot({ path: path.join(downloadPath, 'debug-screenshot.png') });
+                console.log(chalk.gray(`📷 Debug screenshot saved to: ${downloadPath}/debug-screenshot.png`));
+            } catch (screenshotError) {
+                console.log(chalk.yellow(`⚠️  Could not take screenshot: ${screenshotError.message}`));
+            }
             
             // Check if this is a folder view by looking for multiple files
-            const isFolder = await page.evaluate(() => {
+            const folderDetection = await page.evaluate(() => {
                 // Multiple detection methods for folder view
                 const fileRows = document.querySelectorAll('[data-automation-id="listItem"], .od-ItemTile, [role="gridcell"]');
                 const listView = document.querySelector('[data-automation-id="detailsList"]');
                 const folderIndicators = document.querySelectorAll('[data-icon-name="FabricFolder"], .ms-Icon--FabricFolder');
                 
-                console.log('Detection results:', {
+                // Look for specific OneDrive folder elements
+                const breadcrumb = document.querySelector('[data-automation-id="breadcrumb"]');
+                const fileList = document.querySelector('[data-automation-id="fileList"]');
+                const commandBar = document.querySelector('[data-automation-id="commandBar"]');
+                
+                // Check URL patterns
+                const url = window.location.href;
+                const hasIdParam = url.includes('id=') && !url.includes('file=');
+                const isSharedView = url.includes('onedrive.live.com') && (url.includes('sb=') || url.includes('cid='));
+                
+                // Look for file entries in different ways
+                const allButtons = document.querySelectorAll('button');
+                const fileButtons = Array.from(allButtons).filter(btn => 
+                    btn.textContent && 
+                    (btn.textContent.includes('.mp4') || btn.textContent.includes('.avi') || btn.textContent.includes('.mov'))
+                );
+                
+                // Look for any elements that might contain filenames
+                const allText = document.body.innerText;
+                const videoFiles = (allText.match(/\.(mp4|avi|mov|mkv|wmv)/gi) || []).length;
+                
+                const result = {
                     fileRowsCount: fileRows.length,
                     hasListView: !!listView,
                     folderIndicators: folderIndicators.length,
-                    url: window.location.href
-                });
+                    hasBreadcrumb: !!breadcrumb,
+                    hasFileList: !!fileList,
+                    hasCommandBar: !!commandBar,
+                    hasIdParam,
+                    isSharedView,
+                    fileButtonsCount: fileButtons.length,
+                    videoFilesInText: videoFiles,
+                    url: url,
+                    title: document.title
+                };
                 
-                return fileRows.length > 1 || !!listView || folderIndicators.length > 0;
+                console.log('Folder detection results:', result);
+                
+                // More comprehensive folder detection
+                const isFolder = fileRows.length > 1 || 
+                               !!listView || 
+                               folderIndicators.length > 0 ||
+                               fileButtons.length > 1 ||
+                               videoFiles > 1 ||
+                               (isSharedView && hasIdParam && !url.includes('file='));
+                
+                return { isFolder, details: result };
             });
+            
+            console.log(chalk.gray(`🔍 Folder detection: ${folderDetection.isFolder ? 'FOLDER' : 'SINGLE FILE'}`));
+            console.log(chalk.gray(`📋 Details:`, JSON.stringify(folderDetection.details, null, 2)));
+            
+            // Save HTML for debugging if needed
+            try {
+                const htmlContent = await page.content();
+                await fs.writeFile(path.join(downloadPath, 'debug-page.html'), htmlContent);
+                console.log(chalk.gray(`📄 HTML content saved to: ${downloadPath}/debug-page.html`));
+            } catch (htmlError) {
+                console.log(chalk.yellow(`⚠️  Could not save HTML: ${htmlError.message}`));
+            }
+            
+            const isFolder = folderDetection.isFolder;
             
             if (isFolder) {
                 console.log(chalk.blue('📁 Detected folder view, attempting folder download...'));
