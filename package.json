@@ -6,11 +6,13 @@
   "scripts": {
     "start": "node onedrive-to-r2.js",
     "test": "node onedrive-to-r2.js --test",
-    "dev": "node --inspect onedrive-to-r2.js"
+    "dev": "node --inspect onedrive-to-r2.js",
+    "r2-to-apivideo": "node r2-to-apivideo.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.540.0",
     "@aws-sdk/lib-storage": "^3.540.0",
+    "@api.video/nodejs-client": "^2.4.2",
     "axios": "^1.6.7",
     "puppeteer": "^22.2.0",
     "dotenv": "^16.4.5",
@@ -30,7 +32,8 @@
     "r2",
     "download",
     "upload",
-    "automation"
+    "automation",
+    "api.video"
   ],
   "author": "OneDrive to R2 Tool",
   "license": "MIT"
