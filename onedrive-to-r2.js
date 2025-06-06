@@ -57,7 +57,7 @@ class OneDriveToR2 {
         await fs.ensureDir(downloadPath);
         
         const browser = await puppeteer.launch({
-            headless: 'new',
+            headless: process.env.PUPPETEER_HEADLESS !== 'false', // Allow debugging with PUPPETEER_HEADLESS=false
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -146,7 +146,11 @@ class OneDriveToR2 {
                                folderIndicators.length > 0 ||
                                fileButtons.length > 1 ||
                                videoFiles > 1 ||
-                               (isSharedView && hasIdParam && !url.includes('file='));
+                               (isSharedView && hasIdParam && !url.includes('file=')) ||
+                               // Force folder mode for URLs with sb= parameter (sort by)
+                               url.includes('sb=') ||
+                               // Force folder mode for URLs with sd= parameter (sort direction)
+                               url.includes('sd=');
                 
                 return { isFolder, details: result };
             });
@@ -170,26 +174,55 @@ class OneDriveToR2 {
                 
                 // First try to download the entire folder as ZIP
                 const folderDownloadResult = await page.evaluate(() => {
-                    // Look for folder download button
-                    const folderDownloadSelectors = [
-                        'button[data-automation-id="downloadCommand"]',
-                        '[data-automation-id="downloadButton"]',
-                        'button[aria-label*="Download"]',
-                        'button[title*="Download"]',
-                        '.ms-CommandBarItem-link[aria-label*="Download"]',
-                        '[data-icon-name="Download"]'
-                    ];
+                    // Look for folder download button with comprehensive search
+                    const allElements = document.querySelectorAll('*');
+                    const downloadButtons = [];
                     
-                    for (const selector of folderDownloadSelectors) {
-                        const button = document.querySelector(selector);
-                        if (button && !button.disabled) {
-                            console.log('Found folder download button:', selector);
-                            button.click();
-                            return { success: true, type: 'folder-zip' };
+                    // Find all potential download buttons
+                    for (const element of allElements) {
+                        const text = element.textContent || '';
+                        const ariaLabel = element.getAttribute('aria-label') || '';
+                        const title = element.getAttribute('title') || '';
+                        const dataAutomationId = element.getAttribute('data-automation-id') || '';
+                        
+                        if (
+                            text.toLowerCase().includes('download') ||
+                            ariaLabel.toLowerCase().includes('download') ||
+                            title.toLowerCase().includes('download') ||
+                            dataAutomationId.includes('download') ||
+                            element.querySelector('[data-icon-name*="Download"]')
+                        ) {
+                            downloadButtons.push({
+                                element: element,
+                                text: text.substring(0, 50),
+                                ariaLabel: ariaLabel,
+                                title: title,
+                                tag: element.tagName,
+                                dataAutomationId: dataAutomationId
+                            });
                         }
                     }
                     
-                    return { success: false, reason: 'No folder download button found' };
+                    console.log('Found potential download buttons:', downloadButtons.length);
+                    downloadButtons.forEach((btn, i) => {
+                        console.log(`  ${i + 1}. ${btn.tag} - ${btn.text} (${btn.ariaLabel || btn.title})`);
+                    });
+                    
+                    // Try clicking the most likely download button
+                    for (const btnInfo of downloadButtons) {
+                        const btn = btnInfo.element;
+                        if (btn.tagName === 'BUTTON' || btn.tagName === 'A' || btn.role === 'button') {
+                            try {
+                                console.log('Attempting to click:', btnInfo);
+                                btn.click();
+                                return { success: true, type: 'folder-zip', clicked: btnInfo };
+                            } catch (clickError) {
+                                console.log('Click failed:', clickError.message);
+                            }
+                        }
+                    }
+                    
+                    return { success: false, reason: 'No clickable download button found', foundButtons: downloadButtons.length };
                 });
                 
                 if (folderDownloadResult.success) {
