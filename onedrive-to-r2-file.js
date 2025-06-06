@@ -169,8 +169,8 @@ class OneDriveFileToR2 {
             
             console.log(chalk.green('✅ Download initiated, waiting for completion...'));
             
-            // Wait for download
-            const downloadedFile = await this.waitForDownload(downloadPath, 60000);
+            // Wait for download (increased timeout for large files)
+            const downloadedFile = await this.waitForDownload(downloadPath, 7200000); // 2 hours
             
             return {
                 filePath: path.join(downloadPath, downloadedFile),
@@ -184,31 +184,88 @@ class OneDriveFileToR2 {
         }
     }
     
-    async waitForDownload(downloadPath, timeout = 60000) {
+    async waitForDownload(downloadPath, timeout = 7200000) { // Default 2 hours for large files
         const startTime = Date.now();
+        let lastSize = 0;
+        let stableCount = 0;
+        let lastProgressTime = 0;
+        
+        console.log(chalk.blue('📊 Monitoring download progress...'));
         
         while (Date.now() - startTime < timeout) {
             try {
                 const files = await fs.readdir(downloadPath);
-                const downloadedFiles = files.filter(file => 
+                
+                // Look for downloading files (.crdownload) and completed files
+                const downloadingFiles = files.filter(file => file.endsWith('.crdownload'));
+                const completedFiles = files.filter(file => 
                     !file.endsWith('.crdownload') && 
                     !file.includes('debug') &&
                     file.length > 0
                 );
                 
-                if (downloadedFiles.length > 0) {
-                    const file = downloadedFiles[0];
-                    console.log(chalk.green(`✅ Download completed: ${file}`));
+                if (completedFiles.length > 0) {
+                    // Download completed
+                    const file = completedFiles[0];
+                    const finalStats = await fs.stat(path.join(downloadPath, file));
+                    console.log(chalk.green(`✅ Download completed: ${file} (${this.formatBytes(finalStats.size)})`));
                     return file;
                 }
+                
+                if (downloadingFiles.length > 0) {
+                    // Download in progress
+                    const downloadingFile = downloadingFiles[0];
+                    const filePath = path.join(downloadPath, downloadingFile);
+                    const stats = await fs.stat(filePath);
+                    const currentSize = stats.size;
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    
+                    // Show progress every 10 seconds
+                    if (Date.now() - lastProgressTime > 10000) {
+                        const speed = elapsed > 0 ? this.formatBytes(currentSize / elapsed) + '/s' : '0 B/s';
+                        const remainingTime = Math.floor((timeout - (Date.now() - startTime)) / 1000);
+                        
+                        console.log(chalk.gray(
+                            `📥 Downloading: ${this.formatBytes(currentSize)} | ` +
+                            `Speed: ${speed} | ` +
+                            `Elapsed: ${Math.floor(elapsed)}s | ` +
+                            `Timeout in: ${remainingTime}s`
+                        ));
+                        lastProgressTime = Date.now();
+                    }
+                    
+                    // Check if download has stalled (size hasn't changed)
+                    if (currentSize === lastSize) {
+                        stableCount++;
+                    } else {
+                        stableCount = 0;
+                    }
+                    lastSize = currentSize;
+                    
+                    // If size stable for too long and file is reasonably sized, might be complete
+                    if (stableCount > 30 && currentSize > 1024 * 1024) { // 30 seconds stable and > 1MB
+                        console.log(chalk.yellow('⚠️  Download appears complete but file still has .crdownload extension'));
+                        console.log(chalk.gray('🔄 Waiting for browser to finalize...'));
+                    }
+                } else {
+                    // No files yet, show waiting message every 30 seconds
+                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                    if (elapsed % 30 === 0 && elapsed > 0) {
+                        console.log(chalk.gray(`⏳ Waiting for download to start... (${elapsed}s elapsed)`));
+                    }
+                }
+                
             } catch (error) {
-                // Directory might not exist yet
+                // Directory might not exist yet or file access error
+                if (!error.message.includes('ENOENT')) {
+                    console.log(chalk.yellow(`⚠️  File access error: ${error.message}`));
+                }
             }
             
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
-        throw new Error('Download timeout');
+        throw new Error(`Download timeout after ${Math.floor(timeout / 1000 / 60)} minutes`);
     }
     
     async uploadToR2(filePath, r2Key) {
