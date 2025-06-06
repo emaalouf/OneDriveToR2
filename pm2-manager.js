@@ -147,7 +147,7 @@ program
 
 program
     .command('single')
-    .description('Start a single file transfer')
+    .description('Start a single file transfer from R2')
     .argument('<r2-key>', 'R2 key of file to transfer')
     .option('-t, --title <title>', 'Video title')
     .option('-d, --description <description>', 'Video description')
@@ -171,6 +171,68 @@ program
             
         } catch (error) {
             console.error(chalk.red(`❌ Failed to start single transfer: ${error.message}`));
+            process.exit(1);
+        }
+    });
+
+program
+    .command('local')
+    .description('Start a local file upload to api.video')
+    .argument('<file-path>', 'Local path to video file')
+    .option('-t, --title <title>', 'Video title')
+    .option('-d, --description <description>', 'Video description')
+    .option('--tags <tags>', 'Comma-separated tags')
+    .action(async (filePath, options) => {
+        try {
+            let args = ['local', filePath];
+            if (options.title) args.push('--title', options.title);
+            if (options.description) args.push('--description', options.description);
+            if (options.tags) args.push('--tags', options.tags);
+            
+            await runPM2Command('start', [
+                'pm2-transfer.js',
+                '--name', 'r2-to-apivideo-local',
+                '--autorestart', 'false',
+                '--', ...args
+            ]);
+            
+            console.log(chalk.green('✅ Local file upload started with PM2'));
+            console.log(chalk.cyan('📊 Monitor with: pm2 logs r2-to-apivideo-local'));
+            
+        } catch (error) {
+            console.error(chalk.red(`❌ Failed to start local upload: ${error.message}`));
+            process.exit(1);
+        }
+    });
+
+program
+    .command('local-batch')
+    .description('Start a local directory batch upload to api.video')
+    .argument('<directory>', 'Directory containing video files')
+    .option('-p, --pattern <pattern>', 'File pattern to match')
+    .option('-t, --title-prefix <prefix>', 'Prefix for video titles')
+    .option('-d, --description <description>', 'Video description')
+    .option('--tags <tags>', 'Comma-separated tags')
+    .action(async (directory, options) => {
+        try {
+            let args = ['local-batch', directory];
+            if (options.pattern) args.push('--pattern', options.pattern);
+            if (options.titlePrefix) args.push('--title-prefix', options.titlePrefix);
+            if (options.description) args.push('--description', options.description);
+            if (options.tags) args.push('--tags', options.tags);
+            
+            await runPM2Command('start', [
+                'pm2-transfer.js',
+                '--name', 'r2-to-apivideo-local-batch',
+                '--autorestart', 'false',
+                '--', ...args
+            ]);
+            
+            console.log(chalk.green('✅ Local batch upload started with PM2'));
+            console.log(chalk.cyan('📊 Monitor with: pm2 logs r2-to-apivideo-local-batch'));
+            
+        } catch (error) {
+            console.error(chalk.red(`❌ Failed to start local batch upload: ${error.message}`));
             process.exit(1);
         }
     });

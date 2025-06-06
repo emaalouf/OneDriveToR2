@@ -393,6 +393,158 @@ program
         }
     });
 
+program
+    .command('local')
+    .description('Upload a local video file directly to api.video')
+    .argument('<file-path>', 'Local path to the video file')
+    .option('-t, --title <title>', 'Title for the video')
+    .option('-d, --description <description>', 'Description for the video')
+    .option('--tags <tags>', 'Comma-separated tags for the video', 'local-upload,automated')
+    .action(async (filePath, options) => {
+        try {
+            const transferTool = new R2ToApiVideo();
+            
+            // Check if file exists and is a video
+            if (!await fs.pathExists(filePath)) {
+                throw new Error(`File not found: ${filePath}`);
+            }
+            
+            const stats = await fs.stat(filePath);
+            if (!stats.isFile()) {
+                throw new Error(`Path is not a file: ${filePath}`);
+            }
+            
+            // Check file extension
+            const ext = path.extname(filePath).toLowerCase();
+            const videoExtensions = ['.mp4', '.m4v', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv'];
+            if (!videoExtensions.includes(ext)) {
+                console.warn(chalk.yellow(`⚠️  Warning: ${ext} might not be a supported video format`));
+            }
+            
+            console.log(chalk.blue(`📁 Uploading local file: ${filePath}`));
+            console.log(chalk.blue(`📊 File size: ${transferTool.formatBytes(stats.size)}`));
+            
+            const fileName = path.basename(filePath);
+            const uploadResult = await transferTool.uploadToApiVideo(filePath, {
+                title: options.title || fileName.replace(/\.[^/.]+$/, ""),
+                description: options.description || `Uploaded from local file: ${fileName}`,
+                tags: options.tags ? options.tags.split(',').map(tag => tag.trim()) : ['local-upload', 'automated'],
+                customMetadata: [
+                    { key: 'source', value: 'local-file' },
+                    { key: 'original_path', value: filePath }
+                ]
+            });
+            
+            console.log(chalk.green('\n✅ Local file upload complete!'));
+            console.log(chalk.cyan(`Video ID: ${uploadResult.videoId}`));
+            console.log(chalk.cyan(`Player URL: ${uploadResult.playerUrl}`));
+            
+        } catch (error) {
+            console.error(chalk.red(`❌ Local file upload failed: ${error.message}`));
+            process.exit(1);
+        }
+    });
+
+program
+    .command('local-batch')
+    .description('Upload multiple local video files to api.video')
+    .argument('<directory>', 'Directory containing video files')
+    .option('-p, --pattern <pattern>', 'File pattern to match (glob)', '**/*.{mp4,m4v,mov,avi,mkv,webm}')
+    .option('-t, --title-prefix <prefix>', 'Prefix for video titles')
+    .option('-d, --description <description>', 'Description for uploaded videos')
+    .option('--tags <tags>', 'Comma-separated tags for videos', 'local-batch,automated')
+    .option('-r, --report <path>', 'Path to save upload report', 'local-upload-report.json')
+    .action(async (directory, options) => {
+        try {
+            const transferTool = new R2ToApiVideo();
+            const glob = require('glob');
+            
+            // Check if directory exists
+            if (!await fs.pathExists(directory)) {
+                throw new Error(`Directory not found: ${directory}`);
+            }
+            
+            const stats = await fs.stat(directory);
+            if (!stats.isDirectory()) {
+                throw new Error(`Path is not a directory: ${directory}`);
+            }
+            
+            // Find video files
+            const pattern = path.join(directory, options.pattern);
+            const files = glob.sync(pattern);
+            
+            if (files.length === 0) {
+                console.log(chalk.yellow(`⚠️  No video files found in ${directory} matching pattern: ${options.pattern}`));
+                return;
+            }
+            
+            console.log(chalk.blue(`🔍 Found ${files.length} video files to upload`));
+            
+            const results = [];
+            const progressBar = new cliProgress.SingleBar({
+                format: 'Progress |{bar}| {percentage}% | {value}/{total} files | Current: {filename}',
+                barCompleteChar: '\u2588',
+                barIncompleteChar: '\u2591',
+                hideCursor: true
+            });
+            
+            progressBar.start(files.length, 0, { filename: 'Starting...' });
+            
+            for (let i = 0; i < files.length; i++) {
+                const filePath = files[i];
+                const fileName = path.basename(filePath);
+                
+                progressBar.update(i, { filename: fileName });
+                
+                try {
+                    const fileStats = await fs.stat(filePath);
+                    console.log(chalk.blue(`\n📤 Uploading: ${fileName} (${transferTool.formatBytes(fileStats.size)})`));
+                    
+                    const uploadResult = await transferTool.uploadToApiVideo(filePath, {
+                        title: (options.titlePrefix ? options.titlePrefix + ' ' : '') + fileName.replace(/\.[^/.]+$/, ""),
+                        description: options.description || `Batch uploaded from: ${fileName}`,
+                        tags: options.tags ? options.tags.split(',').map(tag => tag.trim()) : ['local-batch', 'automated'],
+                        customMetadata: [
+                            { key: 'source', value: 'local-batch' },
+                            { key: 'original_path', value: filePath }
+                        ]
+                    });
+                    
+                    results.push({ ...uploadResult, status: 'success', filePath });
+                    
+                } catch (error) {
+                    console.log(chalk.red(`\n❌ Failed to upload ${fileName}: ${error.message}`));
+                    results.push({ 
+                        originalFileName: fileName, 
+                        filePath,
+                        status: 'error', 
+                        error: error.message 
+                    });
+                }
+            }
+            
+            progressBar.update(files.length, { filename: 'Complete!' });
+            progressBar.stop();
+            
+            // Summary
+            const successful = results.filter(r => r.status === 'success').length;
+            const failed = results.filter(r => r.status === 'error').length;
+            
+            console.log(chalk.green(`\n✅ Local batch upload complete!`));
+            console.log(chalk.green(`   Successful: ${successful}`));
+            if (failed > 0) {
+                console.log(chalk.red(`   Failed: ${failed}`));
+            }
+            
+            // Generate report
+            await transferTool.generateReport(results, options.report);
+            
+        } catch (error) {
+            console.error(chalk.red(`❌ Local batch upload failed: ${error.message}`));
+            process.exit(1);
+        }
+    });
+
 // Global cleanup on process exit
 async function globalCleanup() {
     try {
