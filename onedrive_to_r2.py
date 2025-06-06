@@ -316,6 +316,17 @@ class OneDriveToR2:
         """Process a single OneDrive link."""
         print(f"\nProcessing: {onedrive_url}")
         
+        # Validate URL format
+        if not onedrive_url.startswith(('http://', 'https://')):
+            print("❌ Invalid URL format - must start with http:// or https://")
+            return False
+        
+        # Check for incomplete URLs (missing required parameters)
+        if 'onedrive.live.com' in onedrive_url and '&' not in onedrive_url and 'id=' not in onedrive_url:
+            print("❌ URL appears incomplete - did you forget to quote it in the shell?")
+            print("💡 Tip: Use quotes around the URL: python3 onedrive_to_r2.py \"your-url-here\"")
+            return False
+        
         try:
             # Extract file information
             file_info = self.extract_onedrive_info(onedrive_url)
