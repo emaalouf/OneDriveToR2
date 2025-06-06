@@ -305,34 +305,64 @@ class OneDriveToR2:
         
         browser = None
         try:
-            # Launch headless browser with VPS-friendly options
+            # Determine Chrome executable path
+            chrome_path = None
+            possible_chrome_paths = [
+                '/usr/bin/google-chrome-stable',  # Docker/Ubuntu
+                '/usr/bin/google-chrome',         # Some Linux
+                '/usr/bin/chromium-browser',      # Ubuntu Chromium
+                '/usr/bin/chromium',              # Generic Chromium
+            ]
+            
+            for path in possible_chrome_paths:
+                if os.path.exists(path):
+                    chrome_path = path
+                    print(f"🔍 Using Chrome at: {path}")
+                    break
+            
+            if not chrome_path:
+                print("🔍 Using bundled Chromium")
+            
+            # Enhanced browser arguments for better stability
+            browser_args = [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-default-apps',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-backgrounding-occluded-windows',
+                '--no-first-run',
+                '--no-zygote',
+                '--memory-pressure-off',
+                '--window-size=1280x720',
+                '--virtual-time-budget=30000',
+                '--disable-ipc-flooding-protection',
+                '--disable-background-networking',
+                '--disable-sync',
+                '--metrics-recording-only',
+                '--no-default-browser-check',
+                '--mute-audio'
+            ]
+            
+            # Add single-process only if low memory
+            import psutil
+            available_memory = psutil.virtual_memory().available / (1024**3)  # GB
+            if available_memory < 2:
+                browser_args.append('--single-process')
+                print(f"⚠️  Low memory ({available_memory:.1f}GB), using single-process mode")
+            
             browser = await launch(
                 headless=True,
                 ignoreHTTPSErrors=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-gpu',
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor',
-                    '--disable-extensions',
-                    '--disable-plugins',
-                    '--disable-images',
-                    '--disable-default-apps',
-                    '--disable-background-timer-throttling',
-                    '--disable-renderer-backgrounding',
-                    '--disable-backgrounding-occluded-windows',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--memory-pressure-off',
-                    '--max_old_space_size=4096',
-                    '--window-size=1280x720',
-                    '--virtual-time-budget=30000'
-                ],
-                executablePath=None,  # Use bundled Chromium
+                args=browser_args,
+                executablePath=chrome_path,
                 handleSIGINT=False,
                 handleSIGTERM=False,
                 handleSIGHUP=False
