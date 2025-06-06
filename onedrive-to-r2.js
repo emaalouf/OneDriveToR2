@@ -293,192 +293,93 @@ class OneDriveToR2 {
                     }
                 }
                 
-                console.log(chalk.blue('📄 Downloading individual files...'));
+                                // Simplified approach: Try to download the entire folder as ZIP
+                console.log(chalk.blue('🗜️  Attempting to download entire folder as ZIP...'));
                 
-                const folderFiles = await page.evaluate(() => {
-                    const files = [];
-                    
-                    try {
-                        // Try multiple selectors for file items
-                        const fileSelectors = [
-                            '[data-automation-id="listItem"]',
-                            '.od-ItemTile',
-                            '[role="gridcell"]',
-                            '.ms-List-cell',
-                            '[data-automation-id="fileItem"]',
-                            '.ms-List-row'
-                        ];
-                        
-                        let fileElements = [];
-                        for (const selector of fileSelectors) {
+                const zipDownloadResult = await page.evaluate(() => {
+                    // Wait a bit for page to fully load
+                    return new Promise((resolve) => {
+                        setTimeout(() => {
                             try {
-                                const elements = document.querySelectorAll(selector);
-                                if (elements && elements.length > 0) {
-                                    fileElements = Array.from(elements);
-                                    console.log(`Found ${fileElements.length} elements with selector: ${selector}`);
-                                    break;
-                                }
-                            } catch (selectorError) {
-                                console.log(`Selector failed: ${selector}`, selectorError.message);
-                            }
-                        }
-                        
-                        if (!fileElements || fileElements.length === 0) {
-                            console.log('No file elements found with standard selectors, trying broader search...');
-                            // Fallback: look for any elements containing video file extensions
-                            const allElements = document.querySelectorAll('*');
-                            for (const element of allElements) {
-                                const text = element.textContent || '';
-                                if (text.match(/\.(mp4|avi|mov|mkv|wmv)$/i)) {
-                                    fileElements.push(element);
-                                }
-                            }
-                            console.log(`Found ${fileElements.length} elements with video extensions`);
-                        }
-                    
-                                            for (const element of fileElements) {
-                            try {
-                                // Extract filename
-                                let filename = null;
-                                const nameSelectors = [
-                                    '[data-automation-id="fieldRendererFileName"] span',
-                                    '.od-ItemName',
-                                    '.ms-Link',
-                                    'button[data-automation-id="fileItemName"]',
-                                    '.file-name',
-                                    'span[title]'
-                                ];
+                                // Just try to find ANY download button and click it
+                                console.log('Looking for download buttons...');
                                 
-                                for (const nameSelector of nameSelectors) {
-                                    const nameEl = element.querySelector(nameSelector);
-                                    if (nameEl && nameEl.textContent && nameEl.textContent.trim()) {
-                                        filename = nameEl.textContent.trim();
-                                        break;
-                                    }
-                                    // Also try title attribute
-                                    if (nameEl && nameEl.getAttribute('title')) {
-                                        filename = nameEl.getAttribute('title').trim();
-                                        break;
-                                    }
+                                // First, try to select all files (Ctrl+A equivalent)
+                                const selectAllButton = document.querySelector('[data-automation-id="selectAllCommand"]');
+                                if (selectAllButton) {
+                                    console.log('Found select all button, clicking...');
+                                    selectAllButton.click();
                                 }
                                 
-                                // If no filename found, try extracting from element text directly
-                                if (!filename) {
-                                    const elementText = element.textContent || '';
-                                    const videoMatch = elementText.match(/([^\/\\]+\.(mp4|avi|mov|mkv|wmv))/i);
-                                    if (videoMatch) {
-                                        filename = videoMatch[1];
+                                // Give it a moment
+                                setTimeout(() => {
+                                    // Now look for download button
+                                    const downloadButtons = [
+                                        'button[data-automation-id="downloadCommand"]',
+                                        '[data-automation-id="downloadButton"]',
+                                        'button[aria-label*="Download"]',
+                                        'button[title*="Download"]',
+                                        '.ms-CommandBarItem-link[aria-label*="Download"]',
+                                        '[data-icon-name="Download"]'
+                                    ];
+                                    
+                                    for (const selector of downloadButtons) {
+                                        const button = document.querySelector(selector);
+                                        if (button && !button.disabled && !button.hidden) {
+                                            console.log(`Found download button: ${selector}`);
+                                            button.click();
+                                            resolve({ success: true, button: selector });
+                                            return;
+                                        }
                                     }
-                                }
-                                
-                                if (filename && !filename.includes('..') && filename.length > 0) { // Skip parent directory links
-                                    files.push({
-                                        name: filename,
-                                        element: element,
-                                        index: files.length
-                                    });
-                                }
-                            } catch (elementError) {
-                                console.log('Error processing file element:', elementError.message);
+                                    
+                                    // If no specific download button, look for any button with "download" text
+                                    const allButtons = document.querySelectorAll('button, a, [role="button"]');
+                                    for (const button of allButtons) {
+                                        const text = button.textContent || button.getAttribute('aria-label') || button.getAttribute('title') || '';
+                                        if (text.toLowerCase().includes('download')) {
+                                            console.log(`Found generic download button: ${text}`);
+                                            button.click();
+                                            resolve({ success: true, button: 'generic', text: text });
+                                            return;
+                                        }
+                                    }
+                                    
+                                    resolve({ success: false, reason: 'No download button found' });
+                                }, 1000);
+                            } catch (error) {
+                                resolve({ success: false, reason: error.message });
                             }
-                        }
-                        
-                        return files;
-                        
-                    } catch (mainError) {
-                        console.log('Error in folder file extraction:', mainError.message);
-                        return [];
-                    }
+                        }, 2000);
+                    });
                 });
                 
-                console.log(chalk.gray(`📋 Found ${folderFiles.length} files in folder`));
-                folderFiles.forEach((file, index) => {
-                    console.log(chalk.gray(`  ${index + 1}. ${file.name}`));
-                });
-                
-                // Download each file using browser automation
-                const downloadedFiles = [];
-                
-                for (const [index, file] of folderFiles.entries()) {
-                    console.log(chalk.blue(`\n⬇️  Downloading ${index + 1}/${folderFiles.length}: ${file.name}`));
+                if (zipDownloadResult.success) {
+                    console.log(chalk.green(`✅ Download button clicked: ${zipDownloadResult.button}`));
                     
                     try {
-                        // Click on the file to select it
-                        await page.evaluate((fileIndex) => {
-                            const fileSelectors = [
-                                '[data-automation-id="listItem"]',
-                                '.od-ItemTile',
-                                '[role="gridcell"]',
-                                '.ms-List-cell'
-                            ];
-                            
-                            let fileElements = [];
-                            for (const selector of fileSelectors) {
-                                fileElements = document.querySelectorAll(selector);
-                                if (fileElements.length > 0) break;
-                            }
-                            
-                            if (fileElements[fileIndex]) {
-                                // Try clicking on different parts of the file item
-                                const clickTargets = [
-                                    fileElements[fileIndex].querySelector('[data-automation-id="fileItemName"]'),
-                                    fileElements[fileIndex].querySelector('.ms-Link'),
-                                    fileElements[fileIndex].querySelector('button'),
-                                    fileElements[fileIndex]
-                                ];
-                                
-                                for (const target of clickTargets) {
-                                    if (target) {
-                                        target.click();
-                                        break;
-                                    }
-                                }
-                            }
-                        }, index);
+                        // Wait for ZIP download (folder downloads usually create a ZIP)
+                        console.log(chalk.blue('⏳ Waiting for folder download to complete...'));
+                        const downloadedFile = await this.waitForDownload(downloadPath, 'Grounding.zip', 120000); // 2 minute timeout
                         
-                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        return {
+                            isFolder: true,
+                            isFolderZip: true,
+                            files: [{ name: downloadedFile, downloadPath: downloadPath }],
+                            downloadPath: downloadPath,
+                            extractedBy: 'browser-download'
+                        };
                         
-                        // Look for and click download button
-                        const downloadClicked = await page.evaluate(() => {
-                            const downloadSelectors = [
-                                'button[data-automation-id="downloadCommand"]',
-                                '[data-automation-id="downloadButton"]',
-                                'button[aria-label*="Download"]',
-                                'button[title*="Download"]',
-                                '.ms-CommandBarItem-link[aria-label*="Download"]'
-                            ];
-                            
-                            for (const selector of downloadSelectors) {
-                                const button = document.querySelector(selector);
-                                if (button && !button.disabled) {
-                                    button.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        });
-                        
-                        if (downloadClicked) {
-                            console.log(chalk.green(`✅ Download initiated for ${file.name}`));
-                            
-                            // Wait for download to complete
-                            await this.waitForDownload(downloadPath, file.name, 30000);
-                            
-                            downloadedFiles.push({
-                                name: file.name,
-                                downloadPath: downloadPath
-                            });
-                        } else {
-                            console.log(chalk.yellow(`⚠️  Could not find download button for ${file.name}`));
-                        }
-                        
-                    } catch (error) {
-                        console.log(chalk.red(`❌ Failed to download ${file.name}: ${error.message}`));
+                    } catch (downloadError) {
+                        console.log(chalk.yellow(`⚠️  ZIP download failed: ${downloadError.message}`));
+                        // Continue to fallback
                     }
-                    
-                    // Small delay between downloads
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                } else {
+                    console.log(chalk.yellow(`⚠️  Could not find download button: ${zipDownloadResult.reason}`));
                 }
+                
+                // If ZIP download failed, return empty result to trigger direct extraction fallback
+                throw new Error('Browser folder download failed')
                 
                 return {
                     isFolder: true,
