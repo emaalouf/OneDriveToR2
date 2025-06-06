@@ -1,0 +1,15 @@
+# OneDrive Folder URLs for batch processing
+# Lines starting with # or // are treated as comments and ignored
+# Put one OneDrive folder URL per line
+
+# Example folder from your Grounding collection
+https://onedrive.live.com/?redeem=aHR0cHM6Ly8xZHJ2Lm1zL2YvYy82YTIwYzAyN2NhMWU1YmI0L0V2bld3RGw5LWFkSXVVZHFiNDZ0R2NNQjV4dGRHbTNjTFoxcHQ1T0VzSDhTOWc%5FZT1Oa0d1Z3k&id=6A20C027CA1E5BB4%21s39c0d6f9f97d48a7b9476a6f8ead19c3&cid=6A20C027CA1E5BB4
+
+# Add more OneDrive folder URLs here, one per line
+# https://onedrive.live.com/?id=FOLDER_ID_1...
+# https://onedrive.live.com/?id=FOLDER_ID_2...
+# https://1drv.ms/f/c/another-folder/...
+
+// Another comment style supported
+# Each folder will be downloaded as a ZIP file and uploaded to R2
+# All folders will use the same R2 prefix if specified 

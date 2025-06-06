@@ -534,10 +534,102 @@ class OneDriveToR2Simple {
             console.log(chalk.gray('🗑️  Cleaned up temporary files'));
             
             console.log(chalk.green(`🎉 Success: ${downloadResult.fileName}`));
-            return true;
+            return { success: true, filename: downloadResult.fileName, r2Key };
             
         } catch (error) {
             console.error(chalk.red(`❌ Failed: ${error.message}`));
+            return { success: false, error: error.message, url };
+        }
+    }
+    
+    async processUrlsFromFile(filePath, r2Prefix = '') {
+        console.log(chalk.blue(`📄 Reading URLs from: ${filePath}`));
+        
+        try {
+            const fileContent = await fs.readFile(filePath, 'utf8');
+            const urls = fileContent
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#') && !line.startsWith('//'));
+            
+            if (urls.length === 0) {
+                throw new Error('No valid URLs found in file');
+            }
+            
+            console.log(chalk.blue(`📋 Found ${urls.length} OneDrive URLs to process`));
+            console.log(chalk.gray('💡 Lines starting with # or // are treated as comments and ignored\n'));
+            
+            const results = {
+                total: urls.length,
+                successful: [],
+                failed: [],
+                startTime: Date.now()
+            };
+            
+            for (let i = 0; i < urls.length; i++) {
+                const url = urls[i];
+                const progress = `[${i + 1}/${urls.length}]`;
+                
+                console.log(chalk.blue(`\n${progress} Processing: ${url}`));
+                console.log(chalk.gray('=' .repeat(80)));
+                
+                const result = await this.processLink(url, r2Prefix);
+                
+                if (result.success) {
+                    results.successful.push({
+                        url,
+                        filename: result.filename,
+                        r2Key: result.r2Key
+                    });
+                    console.log(chalk.green(`${progress} ✅ Success`));
+                } else {
+                    results.failed.push({
+                        url,
+                        error: result.error
+                    });
+                    console.log(chalk.red(`${progress} ❌ Failed: ${result.error}`));
+                }
+                
+                // Add a delay between downloads to be respectful to OneDrive
+                if (i < urls.length - 1) {
+                    console.log(chalk.gray('⏳ Waiting 3 seconds before next download...'));
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+            }
+            
+            const duration = ((Date.now() - results.startTime) / 1000).toFixed(1);
+            
+            console.log(chalk.blue('\n📊 BATCH PROCESSING SUMMARY'));
+            console.log(chalk.blue('=' .repeat(60)));
+            console.log(chalk.gray(`⏱️  Total time: ${duration} seconds`));
+            console.log(chalk.gray(`📁 R2 Prefix: ${r2Prefix || '(root)'}`));
+            console.log(chalk.green(`✅ Successful: ${results.successful.length}`));
+            console.log(chalk.red(`❌ Failed: ${results.failed.length}`));
+            
+            if (results.successful.length > 0) {
+                console.log(chalk.green('\n🎉 Successfully processed:'));
+                results.successful.forEach((item, index) => {
+                    console.log(chalk.green(`  ${index + 1}. ${item.filename} → ${item.r2Key}`));
+                });
+            }
+            
+            if (results.failed.length > 0) {
+                console.log(chalk.red('\n💥 Failed downloads:'));
+                results.failed.forEach((item, index) => {
+                    console.log(chalk.red(`  ${index + 1}. ${item.url}`));
+                    console.log(chalk.gray(`     Error: ${item.error}`));
+                });
+            }
+            
+            // Calculate success rate
+            const successRate = ((results.successful.length / results.total) * 100).toFixed(1);
+            console.log(chalk.blue(`\n📈 Success Rate: ${successRate}%`));
+            console.log(chalk.blue('=' .repeat(60)));
+            
+            return results.successful.length > 0;
+            
+        } catch (error) {
+            console.error(chalk.red(`❌ Failed to process batch file: ${error.message}`));
             return false;
         }
     }
@@ -545,17 +637,24 @@ class OneDriveToR2Simple {
 
 program
     .name('onedrive-to-r2-simple')
-    .description('Download OneDrive folder as ZIP to Cloudflare R2')
+    .description('Download OneDrive folder(s) as ZIP to Cloudflare R2')
     .version('1.0.0')
-    .argument('[url]', 'OneDrive folder URL')
+    .argument('[url]', 'OneDrive folder URL (optional if using --file)')
     .option('-p, --prefix <prefix>', 'R2 prefix')
+    .option('-f, --file <path>', 'Text file containing OneDrive URLs (one per line)')
     .option('-e, --email <email>', 'OneDrive email address')
     .option('-w, --password <password>', 'OneDrive password')
     .action(async (url, options) => {
-        if (!url) {
-            console.error(chalk.red('❌ Please provide a URL'));
-            console.log(chalk.yellow('💡 Example: node onedrive-to-r2-simple.js "https://onedrive.live.com/...folder-url..." --prefix "videos/2024"'));
-            console.log(chalk.yellow('💡 With authentication: node onedrive-to-r2-simple.js "https://onedrive.live.com/..." --email "your@email.com" --password "yourpassword"'));
+        if (!url && !options.file) {
+            console.error(chalk.red('❌ Please provide either a URL or a file with URLs'));
+            console.log(chalk.yellow('💡 Single folder: node onedrive-to-r2-simple.js "https://onedrive.live.com/...folder-url..." --prefix "videos"'));
+            console.log(chalk.yellow('💡 Batch mode: node onedrive-to-r2-simple.js --file "folders.txt" --prefix "videos"'));
+            console.log(chalk.yellow('💡 With auth: node onedrive-to-r2-simple.js --file "folders.txt" --email "your@email.com" --password "password"'));
+            return;
+        }
+        
+        if (url && options.file) {
+            console.error(chalk.red('❌ Please provide either a URL or a file, not both'));
             return;
         }
         
@@ -567,17 +666,35 @@ program
             process.env.ONEDRIVE_PASSWORD = options.password;
         }
         
-        console.log(chalk.blue('🚀 Starting OneDrive Folder to R2 ZIP transfer...'));
-        console.log(chalk.gray(`📎 URL: ${url}`));
-        if (options.prefix) {
-            console.log(chalk.gray(`📁 R2 Prefix: ${options.prefix}`));
-        }
-        if (process.env.ONEDRIVE_EMAIL) {
-            console.log(chalk.gray(`🔐 Authentication: ${process.env.ONEDRIVE_EMAIL.substring(0, 3)}***${process.env.ONEDRIVE_EMAIL.substring(process.env.ONEDRIVE_EMAIL.lastIndexOf('@'))}`));
-        }
-        
         const downloader = new OneDriveToR2Simple();
-        const success = await downloader.processLink(url, options.prefix);
+        let success;
+        
+        if (options.file) {
+            // Batch processing from file
+            console.log(chalk.blue('🚀 Starting OneDrive Batch Folder to R2 ZIP transfer...'));
+            console.log(chalk.gray(`📄 File: ${options.file}`));
+            if (options.prefix) {
+                console.log(chalk.gray(`📁 R2 Prefix: ${options.prefix}`));
+            }
+            if (process.env.ONEDRIVE_EMAIL) {
+                console.log(chalk.gray(`🔐 Authentication: ${process.env.ONEDRIVE_EMAIL.substring(0, 3)}***${process.env.ONEDRIVE_EMAIL.substring(process.env.ONEDRIVE_EMAIL.lastIndexOf('@'))}`));
+            }
+            
+            success = await downloader.processUrlsFromFile(options.file, options.prefix);
+        } else {
+            // Single folder processing
+            console.log(chalk.blue('🚀 Starting OneDrive Folder to R2 ZIP transfer...'));
+            console.log(chalk.gray(`📎 URL: ${url}`));
+            if (options.prefix) {
+                console.log(chalk.gray(`📁 R2 Prefix: ${options.prefix}`));
+            }
+            if (process.env.ONEDRIVE_EMAIL) {
+                console.log(chalk.gray(`🔐 Authentication: ${process.env.ONEDRIVE_EMAIL.substring(0, 3)}***${process.env.ONEDRIVE_EMAIL.substring(process.env.ONEDRIVE_EMAIL.lastIndexOf('@'))}`));
+            }
+            
+            const result = await downloader.processLink(url, options.prefix);
+            success = result.success;
+        }
         
         if (success) {
             console.log(chalk.green('\n🎉 Transfer completed successfully!'));
