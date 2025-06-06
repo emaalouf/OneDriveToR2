@@ -55,7 +55,8 @@ class OneDriveToR2Simple {
                 '--disable-extensions',
                 '--no-first-run'
             ],
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+            devtools: process.env.PUPPETEER_HEADLESS === 'false' // Open devtools when not headless
         });
         
         try {
@@ -84,7 +85,29 @@ class OneDriveToR2Simple {
                 return new Promise((resolve) => {
                     setTimeout(() => {
                         try {
-                            console.log('Searching for download buttons...');
+                            console.log('=== DEBUGGING: Searching for download buttons ===');
+                            console.log('Page title:', document.title);
+                            console.log('Current URL:', window.location.href);
+                            
+                            // First, let's see ALL buttons on the page
+                            const allButtons = document.querySelectorAll('button, a, [role="button"], .ms-CommandBarItem, [data-automation-id*="Command"]');
+                            console.log(`Found ${allButtons.length} total interactive elements`);
+                            
+                            const buttonInfo = [];
+                            for (let i = 0; i < Math.min(allButtons.length, 20); i++) {
+                                const btn = allButtons[i];
+                                buttonInfo.push({
+                                    tag: btn.tagName,
+                                    text: (btn.textContent || '').substring(0, 50),
+                                    ariaLabel: btn.getAttribute('aria-label') || '',
+                                    title: btn.getAttribute('title') || '',
+                                    dataAutomationId: btn.getAttribute('data-automation-id') || '',
+                                    className: btn.className || '',
+                                    disabled: btn.disabled
+                                });
+                            }
+                            
+                            console.log('Button details:', JSON.stringify(buttonInfo, null, 2));
                             
                             // Try different download button selectors
                             const selectors = [
@@ -93,7 +116,9 @@ class OneDriveToR2Simple {
                                 'button[aria-label*="Download"]',
                                 'button[title*="Download"]',
                                 '.ms-CommandBarItem-link[aria-label*="Download"]',
-                                '[data-icon-name="Download"]'
+                                '[data-icon-name="Download"]',
+                                '[data-automation-id*="download"]',
+                                '.ms-CommandBarItem[aria-label*="Download"]'
                             ];
                             
                             for (const selector of selectors) {
@@ -106,21 +131,56 @@ class OneDriveToR2Simple {
                                 }
                             }
                             
-                            // Look for any button with "download" in text
-                            const allButtons = document.querySelectorAll('button, a, [role="button"]');
-                            for (const button of allButtons) {
-                                const text = (button.textContent || '').toLowerCase();
-                                const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
-                                
-                                if (text.includes('download') || ariaLabel.includes('download')) {
-                                    console.log(`Found generic download button: ${text || ariaLabel}`);
+                            // Try to select all files first, then look for download
+                            console.log('Trying to select all files first...');
+                            const selectAllSelectors = [
+                                '[data-automation-id="selectAllCommand"]',
+                                'button[aria-label*="Select all"]',
+                                'button[title*="Select all"]'
+                            ];
+                            
+                            let selectAllClicked = false;
+                            for (const selector of selectAllSelectors) {
+                                const button = document.querySelector(selector);
+                                if (button && !button.disabled) {
+                                    console.log(`Found select all button: ${selector}`);
                                     button.click();
-                                    resolve({ success: true, selector: 'generic', text: text || ariaLabel });
-                                    return;
+                                    selectAllClicked = true;
+                                    break;
                                 }
                             }
                             
-                            resolve({ success: false, reason: 'No download button found' });
+                            if (selectAllClicked) {
+                                // Wait a moment then try download again
+                                setTimeout(() => {
+                                    for (const selector of selectors) {
+                                        const button = document.querySelector(selector);
+                                        if (button && !button.disabled) {
+                                            console.log(`Found download button after select all: ${selector}`);
+                                            button.click();
+                                            resolve({ success: true, selector: selector + ' (after select all)' });
+                                            return;
+                                        }
+                                    }
+                                    
+                                    // Last resort: look for any button with "download" text
+                                    for (const button of allButtons) {
+                                        const text = (button.textContent || '').toLowerCase();
+                                        const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+                                        
+                                        if ((text.includes('download') || ariaLabel.includes('download')) && !button.disabled) {
+                                            console.log(`Found generic download button: ${text || ariaLabel}`);
+                                            button.click();
+                                            resolve({ success: true, selector: 'generic', text: text || ariaLabel });
+                                            return;
+                                        }
+                                    }
+                                    
+                                    resolve({ success: false, reason: 'No download button found even after select all', buttonCount: allButtons.length });
+                                }, 2000);
+                            } else {
+                                resolve({ success: false, reason: 'No download or select all button found', buttonCount: allButtons.length });
+                            }
                         } catch (error) {
                             resolve({ success: false, reason: error.message });
                         }
