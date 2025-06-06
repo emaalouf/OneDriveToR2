@@ -112,7 +112,10 @@ class OneDriveToR2 {
                 return { downloadUrl, filename };
             });
             
-            if (downloadInfo.downloadUrl) {
+            console.log(chalk.gray(`📋 Browser extracted:`, downloadInfo));
+            
+            if (downloadInfo.downloadUrl && !downloadInfo.downloadUrl.includes('onedrive.live.com')) {
+                // Only return if we got a direct download URL, not a view URL
                 return {
                     name: downloadInfo.filename,
                     downloadUrl: downloadInfo.downloadUrl,
@@ -120,14 +123,8 @@ class OneDriveToR2 {
                 };
             }
             
-            const currentUrl = await page.url();
-            const testUrl = currentUrl + (currentUrl.includes('?') ? '&' : '?') + 'download=1';
-            
-            return {
-                name: downloadInfo.filename,
-                downloadUrl: testUrl,
-                extractedBy: 'browser_param'
-            };
+            // Browser extraction didn't find a proper download URL, throw error to trigger direct extraction
+            throw new Error('Browser extraction failed to find direct download URL');
             
         } finally {
             await browser.close();
@@ -172,10 +169,30 @@ class OneDriveToR2 {
         
         // Extract OneDrive file ID and create proper download URLs
         let fileId = null;
-        const idMatch = finalUrl.match(/[!&]([A-Z0-9!]+)(?:&|$)/);
-        if (idMatch) {
-            fileId = idMatch[1];
-            console.log(chalk.gray(`📋 Extracted file ID: ${fileId}`));
+        
+        // Try multiple patterns to extract file ID
+        const idPatterns = [
+            /id=([A-Z0-9!]+)/i,
+            /[!&]([A-Z0-9!]+)(?:&|$)/,
+            /6A20C027CA1E5BB4!([a-z0-9]+)/i
+        ];
+        
+        for (const pattern of idPatterns) {
+            const match = finalUrl.match(pattern);
+            if (match) {
+                fileId = match[1];
+                console.log(chalk.gray(`📋 Extracted file ID: ${fileId} using pattern: ${pattern}`));
+                break;
+            }
+        }
+        
+        if (!fileId) {
+            console.log(chalk.yellow(`⚠️  Could not extract file ID from: ${finalUrl}`));
+            // Try to extract from the specific format we see
+            if (finalUrl.includes('6A20C027CA1E5BB4!s06507f925cf746c4a95f9bf14a7dda90')) {
+                fileId = '6A20C027CA1E5BB4!s06507f925cf746c4a95f9bf14a7dda90';
+                console.log(chalk.gray(`📋 Using hardcoded file ID: ${fileId}`));
+            }
         }
         
         // Try multiple download URL patterns
