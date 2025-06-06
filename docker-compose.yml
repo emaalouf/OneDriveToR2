@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  onedrive-to-r2:
+    build: .
+    container_name: onedrive-to-r2
+    restart: unless-stopped
+    
+    # Environment variables
+    env_file:
+      - .env
+    
+    # Volume mounts
+    volumes:
+      - ./links.txt:/app/links.txt:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    
+    # Override default command to process links file
+    command: ["python", "onedrive_to_r2.py", "--file", "links.txt"]
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://httpbin.org/status/200', timeout=10)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Add a web interface or monitoring
+  # watchtower:
+  #   image: containrrr/watchtower
+  #   container_name: watchtower
+  #   restart: unless-stopped
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   command: --interval 30 --cleanup onedrive-to-r2 
