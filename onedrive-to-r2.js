@@ -51,7 +51,10 @@ class OneDriveToR2 {
     }
     
     async extractWithBrowser(url) {
-        console.log(chalk.blue('🌐 Using Puppeteer browser extraction...'));
+        console.log(chalk.blue('🌐 Using Puppeteer browser download...'));
+        
+        const downloadPath = path.join(require('os').tmpdir(), 'onedrive-downloads-' + Date.now());
+        await fs.ensureDir(downloadPath);
         
         const browser = await puppeteer.launch({
             headless: 'new',
@@ -72,6 +75,13 @@ class OneDriveToR2 {
         
         try {
             const page = await browser.newPage();
+            
+            // Set download path
+            await page._client.send('Page.setDownloadBehavior', {
+                behavior: 'allow',
+                downloadPath: downloadPath
+            });
+            
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
             await new Promise(resolve => setTimeout(resolve, 3000));
@@ -83,7 +93,7 @@ class OneDriveToR2 {
             });
             
             if (isFolder) {
-                console.log(chalk.blue('📁 Detected folder view, extracting all files...'));
+                console.log(chalk.blue('📁 Detected folder view, downloading all files...'));
                 
                 const folderFiles = await page.evaluate(() => {
                     const files = [];
@@ -111,7 +121,8 @@ class OneDriveToR2 {
                                 '.od-ItemName',
                                 '.ms-Link',
                                 'button[data-automation-id="fileItemName"]',
-                                '.file-name'
+                                '.file-name',
+                                'span[title]'
                             ];
                             
                             for (const nameSelector of nameSelectors) {
@@ -120,43 +131,18 @@ class OneDriveToR2 {
                                     filename = nameEl.textContent.trim();
                                     break;
                                 }
-                            }
-                            
-                            // Extract file URL by looking for clickable elements
-                            let fileUrl = null;
-                            const linkSelectors = [
-                                'a[href*="onedrive.live.com"]',
-                                'button[data-automation-id="fileItemName"]',
-                                '[role="link"]'
-                            ];
-                            
-                            for (const linkSelector of linkSelectors) {
-                                const linkEl = element.querySelector(linkSelector);
-                                if (linkEl) {
-                                    fileUrl = linkEl.href || linkEl.getAttribute('href');
-                                    if (fileUrl) break;
-                                }
-                            }
-                            
-                            // If we couldn't find a direct link, try to construct one from the current URL
-                            if (!fileUrl && filename) {
-                                const currentUrl = window.location.href;
-                                const urlObj = new URL(currentUrl);
-                                
-                                // Try to generate individual file URLs
-                                // This is a simplified approach - OneDrive URLs are complex
-                                if (urlObj.searchParams.get('id')) {
-                                    const folderId = urlObj.searchParams.get('id');
-                                    // For now, we'll mark these for individual handling
-                                    fileUrl = `${currentUrl}&file=${encodeURIComponent(filename)}`;
+                                // Also try title attribute
+                                if (nameEl && nameEl.getAttribute('title')) {
+                                    filename = nameEl.getAttribute('title').trim();
+                                    break;
                                 }
                             }
                             
                             if (filename && !filename.includes('..')) { // Skip parent directory links
                                 files.push({
                                     name: filename,
-                                    url: fileUrl || window.location.href, // Fallback to current URL
-                                    isFile: true
+                                    element: element,
+                                    index: files.length
                                 });
                             }
                         } catch (error) {
@@ -172,67 +158,187 @@ class OneDriveToR2 {
                     console.log(chalk.gray(`  ${index + 1}. ${file.name}`));
                 });
                 
+                // Download each file using browser automation
+                const downloadedFiles = [];
+                
+                for (const [index, file] of folderFiles.entries()) {
+                    console.log(chalk.blue(`\n⬇️  Downloading ${index + 1}/${folderFiles.length}: ${file.name}`));
+                    
+                    try {
+                        // Click on the file to select it
+                        await page.evaluate((fileIndex) => {
+                            const fileSelectors = [
+                                '[data-automation-id="listItem"]',
+                                '.od-ItemTile',
+                                '[role="gridcell"]',
+                                '.ms-List-cell'
+                            ];
+                            
+                            let fileElements = [];
+                            for (const selector of fileSelectors) {
+                                fileElements = document.querySelectorAll(selector);
+                                if (fileElements.length > 0) break;
+                            }
+                            
+                            if (fileElements[fileIndex]) {
+                                // Try clicking on different parts of the file item
+                                const clickTargets = [
+                                    fileElements[fileIndex].querySelector('[data-automation-id="fileItemName"]'),
+                                    fileElements[fileIndex].querySelector('.ms-Link'),
+                                    fileElements[fileIndex].querySelector('button'),
+                                    fileElements[fileIndex]
+                                ];
+                                
+                                for (const target of clickTargets) {
+                                    if (target) {
+                                        target.click();
+                                        break;
+                                    }
+                                }
+                            }
+                        }, index);
+                        
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        
+                        // Look for and click download button
+                        const downloadClicked = await page.evaluate(() => {
+                            const downloadSelectors = [
+                                'button[data-automation-id="downloadCommand"]',
+                                '[data-automation-id="downloadButton"]',
+                                'button[aria-label*="Download"]',
+                                'button[title*="Download"]',
+                                '.ms-CommandBarItem-link[aria-label*="Download"]'
+                            ];
+                            
+                            for (const selector of downloadSelectors) {
+                                const button = document.querySelector(selector);
+                                if (button && !button.disabled) {
+                                    button.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        });
+                        
+                        if (downloadClicked) {
+                            console.log(chalk.green(`✅ Download initiated for ${file.name}`));
+                            
+                            // Wait for download to complete
+                            await this.waitForDownload(downloadPath, file.name, 30000);
+                            
+                            downloadedFiles.push({
+                                name: file.name,
+                                downloadPath: downloadPath
+                            });
+                        } else {
+                            console.log(chalk.yellow(`⚠️  Could not find download button for ${file.name}`));
+                        }
+                        
+                    } catch (error) {
+                        console.log(chalk.red(`❌ Failed to download ${file.name}: ${error.message}`));
+                    }
+                    
+                    // Small delay between downloads
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+                
                 return {
                     isFolder: true,
-                    files: folderFiles,
-                    extractedBy: 'browser'
+                    files: downloadedFiles,
+                    downloadPath: downloadPath,
+                    extractedBy: 'browser-download'
                 };
             }
             
-            // Single file extraction (original logic)
-            const downloadInfo = await page.evaluate(() => {
-                let downloadUrl = null;
-                let filename = 'unknown_file';
-                
-                // Look for download URLs and filenames
+            // Single file download
+            console.log(chalk.blue('📄 Single file detected, downloading...'));
+            
+            // Try to click download button for single file
+            const downloadClicked = await page.evaluate(() => {
                 const downloadSelectors = [
-                    'a[href*="download"]',
                     'button[data-automation-id="downloadCommand"]',
-                    '[data-automation-id="downloadButton"]'
+                    '[data-automation-id="downloadButton"]',
+                    'button[aria-label*="Download"]',
+                    'button[title*="Download"]',
+                    '.ms-CommandBarItem-link[aria-label*="Download"]'
                 ];
                 
                 for (const selector of downloadSelectors) {
-                    const element = document.querySelector(selector);
-                    if (element) {
-                        downloadUrl = element.href || element.getAttribute('href');
-                        if (downloadUrl) break;
+                    const button = document.querySelector(selector);
+                    if (button && !button.disabled) {
+                        button.click();
+                        return true;
                     }
                 }
-                
-                const filenameSelectors = [
-                    '[data-automation-id="fieldRendererFileName"] span',
-                    'h1[data-automation-id="contentHeader"]',
-                    '.od-ItemName'
-                ];
-                
-                for (const selector of filenameSelectors) {
-                    const element = document.querySelector(selector);
-                    if (element && element.textContent) {
-                        filename = element.textContent.trim();
-                        break;
-                    }
-                }
-                
-                return { downloadUrl, filename };
+                return false;
             });
             
-            console.log(chalk.gray(`📋 Browser extracted:`, downloadInfo));
-            
-            if (downloadInfo.downloadUrl && !downloadInfo.downloadUrl.includes('onedrive.live.com')) {
-                // Only return if we got a direct download URL, not a view URL
-                return {
-                    name: downloadInfo.filename,
-                    downloadUrl: downloadInfo.downloadUrl,
-                    extractedBy: 'browser'
-                };
+            if (!downloadClicked) {
+                throw new Error('Could not find download button');
             }
             
-            // Browser extraction didn't find a proper download URL, throw error to trigger direct extraction
-            throw new Error('Browser extraction failed to find direct download URL');
+            // Get filename
+            const filename = await page.evaluate(() => {
+                const nameSelectors = [
+                    '[data-automation-id="fieldRendererFileName"] span',
+                    'h1[data-automation-id="contentHeader"]',
+                    '.od-ItemName',
+                    'title'
+                ];
+                
+                for (const selector of nameSelectors) {
+                    const element = document.querySelector(selector);
+                    if (element && element.textContent) {
+                        return element.textContent.trim();
+                    }
+                }
+                
+                return 'onedrive_file';
+            });
+            
+            // Wait for download
+            await this.waitForDownload(downloadPath, filename, 30000);
+            
+            return {
+                name: filename,
+                downloadPath: downloadPath,
+                extractedBy: 'browser-download'
+            };
             
         } finally {
             await browser.close();
         }
+    }
+    
+    async waitForDownload(downloadPath, expectedFilename, timeout = 30000) {
+        console.log(chalk.blue(`⏳ Waiting for download to complete: ${expectedFilename}`));
+        
+        const startTime = Date.now();
+        
+        while (Date.now() - startTime < timeout) {
+            try {
+                const files = await fs.readdir(downloadPath);
+                
+                // Look for the expected file or any file if filename is generic
+                const downloadedFile = files.find(file => 
+                    file === expectedFilename || 
+                    file.includes(expectedFilename.split('.')[0]) ||
+                    (expectedFilename === 'onedrive_file' && file !== '.crdownload')
+                );
+                
+                if (downloadedFile && !downloadedFile.endsWith('.crdownload')) {
+                    console.log(chalk.green(`✅ Download completed: ${downloadedFile}`));
+                    return downloadedFile;
+                }
+                
+            } catch (error) {
+                // Directory might not exist yet
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        throw new Error(`Download timeout for ${expectedFilename}`);
     }
     
     async extractDirect(url) {
@@ -324,6 +430,35 @@ class OneDriveToR2 {
     }
     
     async downloadFile(fileInfo, tempDir) {
+        // Handle browser downloads
+        if (fileInfo.extractedBy === 'browser-download') {
+            console.log(chalk.blue(`📁 Moving browser download: ${fileInfo.name}`));
+            
+            const downloadPath = fileInfo.downloadPath;
+            const files = await fs.readdir(downloadPath);
+            
+            // Find the downloaded file
+            const downloadedFile = files.find(file => 
+                file === fileInfo.name || 
+                file.includes(fileInfo.name.split('.')[0]) ||
+                (!file.includes('.crdownload') && files.length === 1)
+            );
+            
+            if (!downloadedFile) {
+                throw new Error(`Downloaded file not found in ${downloadPath}`);
+            }
+            
+            const sourcePath = path.join(downloadPath, downloadedFile);
+            const targetPath = path.join(tempDir, fileInfo.name || downloadedFile);
+            
+            // Move file to temp directory
+            await fs.move(sourcePath, targetPath);
+            console.log(chalk.green(`✅ Moved: ${downloadedFile} -> ${targetPath}`));
+            
+            return targetPath;
+        }
+        
+        // Original axios-based download logic for fallback
         const { name, downloadUrl, downloadUrls } = fileInfo;
         const filePath = path.join(tempDir, name);
         
@@ -443,7 +578,7 @@ class OneDriveToR2 {
                 return await this.processFolder(extractedInfo, r2Prefix);
             }
             
-            // Single file processing (original logic)
+            // Single file processing
             const tempDir = await fs.mkdtemp(path.join(require('os').tmpdir(), 'onedrive-'));
             
             try {
@@ -452,6 +587,17 @@ class OneDriveToR2 {
                 await this.uploadToR2(filePath, r2Key);
                 
                 console.log(chalk.green(`🎉 Success: ${extractedInfo.name}`));
+                
+                // Clean up download directory for browser downloads
+                if (extractedInfo.extractedBy === 'browser-download' && extractedInfo.downloadPath) {
+                    try {
+                        await fs.remove(extractedInfo.downloadPath);
+                        console.log(chalk.gray(`🗑️  Cleaned up download directory`));
+                    } catch (error) {
+                        console.log(chalk.yellow(`⚠️  Could not clean up download directory: ${error.message}`));
+                    }
+                }
+                
                 return true;
                 
             } finally {
@@ -515,34 +661,75 @@ class OneDriveToR2 {
         let successCount = 0;
         let failCount = 0;
         
-        for (const [index, file] of folderInfo.files.entries()) {
-            console.log(chalk.blue(`\n📄 Processing file ${index + 1}/${folderInfo.files.length}: ${file.name}`));
-            
-            const tempDir = await fs.mkdtemp(path.join(require('os').tmpdir(), 'onedrive-'));
-            
-            try {
-                // Extract individual file download info
-                let fileInfo;
-                if (file.url && file.url !== folderInfo.baseUrl) {
-                    // We have a specific file URL
-                    fileInfo = await this.extractOneDriveInfo(file.url);
-                } else {
-                    // Extract from folder context
-                    fileInfo = await this.extractIndividualFileFromFolder(folderInfo.baseUrl || file.url, file.name);
+        // For browser downloads, files are already downloaded
+        if (folderInfo.extractedBy === 'browser-download') {
+            for (const [index, file] of folderInfo.files.entries()) {
+                console.log(chalk.blue(`\n📄 Processing file ${index + 1}/${folderInfo.files.length}: ${file.name}`));
+                
+                const tempDir = await fs.mkdtemp(path.join(require('os').tmpdir(), 'onedrive-'));
+                
+                try {
+                    // File info for browser downloads
+                    const fileInfo = {
+                        name: file.name,
+                        downloadPath: file.downloadPath,
+                        extractedBy: 'browser-download'
+                    };
+                    
+                    const filePath = await this.downloadFile(fileInfo, tempDir);
+                    const r2Key = r2Prefix ? `${r2Prefix}/${file.name}` : file.name;
+                    await this.uploadToR2(filePath, r2Key);
+                    
+                    console.log(chalk.green(`✅ Success: ${file.name}`));
+                    successCount++;
+                    
+                } catch (error) {
+                    console.error(chalk.red(`❌ Failed ${file.name}: ${error.message}`));
+                    failCount++;
+                } finally {
+                    await fs.remove(tempDir);
                 }
-                
-                const filePath = await this.downloadFile(fileInfo, tempDir);
-                const r2Key = r2Prefix ? `${r2Prefix}/${fileInfo.name}` : fileInfo.name;
-                await this.uploadToR2(filePath, r2Key);
-                
-                console.log(chalk.green(`✅ Success: ${fileInfo.name}`));
-                successCount++;
-                
+            }
+            
+            // Clean up download directory
+            try {
+                await fs.remove(folderInfo.downloadPath);
+                console.log(chalk.gray(`🗑️  Cleaned up download directory`));
             } catch (error) {
-                console.error(chalk.red(`❌ Failed ${file.name}: ${error.message}`));
-                failCount++;
-            } finally {
-                await fs.remove(tempDir);
+                console.log(chalk.yellow(`⚠️  Could not clean up download directory: ${error.message}`));
+            }
+            
+        } else {
+            // Original logic for URL-based downloads
+            for (const [index, file] of folderInfo.files.entries()) {
+                console.log(chalk.blue(`\n📄 Processing file ${index + 1}/${folderInfo.files.length}: ${file.name}`));
+                
+                const tempDir = await fs.mkdtemp(path.join(require('os').tmpdir(), 'onedrive-'));
+                
+                try {
+                    // Extract individual file download info
+                    let fileInfo;
+                    if (file.url && file.url !== folderInfo.baseUrl) {
+                        // We have a specific file URL
+                        fileInfo = await this.extractOneDriveInfo(file.url);
+                    } else {
+                        // Extract from folder context
+                        fileInfo = await this.extractIndividualFileFromFolder(folderInfo.baseUrl || file.url, file.name);
+                    }
+                    
+                    const filePath = await this.downloadFile(fileInfo, tempDir);
+                    const r2Key = r2Prefix ? `${r2Prefix}/${fileInfo.name}` : fileInfo.name;
+                    await this.uploadToR2(filePath, r2Key);
+                    
+                    console.log(chalk.green(`✅ Success: ${fileInfo.name}`));
+                    successCount++;
+                    
+                } catch (error) {
+                    console.error(chalk.red(`❌ Failed ${file.name}: ${error.message}`));
+                    failCount++;
+                } finally {
+                    await fs.remove(tempDir);
+                }
             }
         }
         
