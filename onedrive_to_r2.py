@@ -61,42 +61,81 @@ class OneDriveToR2:
 
     def _extract_live_onedrive_info(self, url: str) -> Dict[str, Any]:
         """Extract info from onedrive.live.com URLs."""
+        original_url = url
+        
         # Convert 1drv.ms short URLs to full URLs
         if '1drv.ms' in url:
-            response = self.session.head(url, allow_redirects=True)
+            print(f"Following redirect for short URL...")
+            response = self.session.get(url, allow_redirects=True)
             url = response.url
+            print(f"Redirected to: {url}")
         
-        # Extract file ID from URL
+        # Extract file ID from URL - try multiple patterns
+        file_id = None
+        
+        # Pattern 1: resid= parameter
         if 'resid=' in url:
             file_id = url.split('resid=')[1].split('&')[0]
+            print(f"Found file ID via resid: {file_id}")
+        
+        # Pattern 2: /redir? URLs
         elif '/redir?' in url:
-            # Parse redirect URL
             parsed = urlparse(url)
             params = parse_qs(parsed.query)
             file_id = params.get('resid', [None])[0]
-        else:
-            # Try to extract from path
+            print(f"Found file ID via redir: {file_id}")
+        
+        # Pattern 3: id= parameter
+        elif 'id=' in url:
             match = re.search(r'[?&]id=([^&]+)', url)
             if match:
                 file_id = match.group(1)
+                print(f"Found file ID via id param: {file_id}")
+        
+        # Pattern 4: Extract from 1drv.ms path (format: /t/c/id1/id2)
+        elif '1drv.ms' in original_url:
+            # Try to extract from the original 1drv.ms URL path
+            path_match = re.search(r'1drv\.ms/[a-z]/[a-z]/([^/]+)/([^/?]+)', original_url)
+            if path_match:
+                # Combine the two IDs found in the path
+                id1, id2 = path_match.groups()
+                file_id = f"{id1}!{id2.replace('_', '%21').replace('-', '%2D')}"
+                print(f"Extracted file ID from 1drv.ms path: {file_id}")
+        
+        # Pattern 5: Try to find any ID-like string in the URL
+        if not file_id:
+            # Look for long alphanumeric strings that could be file IDs
+            id_matches = re.findall(r'[A-Za-z0-9_-]{20,}', url)
+            if id_matches:
+                file_id = id_matches[0]
+                print(f"Found potential file ID: {file_id}")
+        
+        if not file_id:
+            print("Could not extract file ID, trying direct download approach...")
+            return self._get_direct_download_url(original_url)
+        
+        # Try Microsoft Graph API first
+        try:
+            api_url = f"https://api.onedrive.com/v1.0/shares/s!{file_id}/root"
+            print(f"Trying Graph API: {api_url}")
+            
+            response = self.session.get(api_url)
+            if response.status_code == 200:
+                metadata = response.json()
+                return {
+                    'name': metadata.get('name', 'unknown_file'),
+                    'download_url': metadata.get('@microsoft.graph.downloadUrl'),
+                    'size': metadata.get('size', 0),
+                    'file_id': file_id
+                }
             else:
-                raise ValueError("Could not extract file ID from URL")
+                print(f"Graph API failed with status {response.status_code}")
+        except Exception as e:
+            print(f"Graph API error: {e}")
         
-        # Get file metadata
-        api_url = f"https://api.onedrive.com/v1.0/shares/s!{file_id}/root"
-        
-        response = self.session.get(api_url)
-        if response.status_code == 200:
-            metadata = response.json()
-            return {
-                'name': metadata.get('name', 'unknown_file'),
-                'download_url': metadata.get('@microsoft.graph.downloadUrl'),
-                'size': metadata.get('size', 0),
-                'file_id': file_id
-            }
-        else:
-            # Fallback: try to get download URL directly
-            return self._get_direct_download_url(url)
+        # Fallback: try to get download URL directly
+        print("Falling back to direct download URL extraction...")
+        return self._get_direct_download_url(original_url)
 
     def _extract_sharepoint_info(self, url: str) -> Dict[str, Any]:
         """Extract info from SharePoint OneDrive URLs."""
@@ -106,36 +145,98 @@ class OneDriveToR2:
 
     def _get_direct_download_url(self, url: str) -> Dict[str, Any]:
         """Get direct download URL by parsing the page."""
-        response = self.session.get(url)
-        response.raise_for_status()
+        print(f"Attempting direct download URL extraction from: {url}")
         
-        # Look for download URL in the page content
-        content = response.text
-        
-        # Try to find filename
-        filename_match = re.search(r'"name":\s*"([^"]+)"', content)
-        filename = filename_match.group(1) if filename_match else "downloaded_file"
-        
-        # Try to find direct download URL
-        download_match = re.search(r'"@microsoft\.graph\.downloadUrl":\s*"([^"]+)"', content)
-        if download_match:
-            download_url = download_match.group(1).replace('\\u0026', '&')
-            return {
-                'name': filename,
-                'download_url': download_url,
-                'size': 0,  # Will be determined during download
-                'file_id': 'unknown'
-            }
-        
-        # Alternative: try to construct download URL
-        if 'download=1' not in url:
-            download_url = url + ('&' if '?' in url else '?') + 'download=1'
-            return {
-                'name': filename,
-                'download_url': download_url,
-                'size': 0,
-                'file_id': 'unknown'
-            }
+        try:
+            response = self.session.get(url)
+            response.raise_for_status()
+            
+            # Look for download URL in the page content
+            content = response.text
+            
+            # Try multiple patterns to find filename
+            filename = "downloaded_file"
+            filename_patterns = [
+                r'"name":\s*"([^"]+)"',
+                r'"fileName":\s*"([^"]+)"',
+                r'"title":\s*"([^"]+)"',
+                r'<title>([^<]+)</title>',
+                r'data-filename="([^"]+)"'
+            ]
+            
+            for pattern in filename_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    filename = match.group(1).strip()
+                    # Clean up filename from HTML entities and extra text
+                    filename = re.sub(r'\s*-\s*OneDrive.*$', '', filename)
+                    filename = re.sub(r'\s*\|\s*Microsoft.*$', '', filename)
+                    break
+            
+            print(f"Extracted filename: {filename}")
+            
+            # Try multiple patterns to find download URL
+            download_url = None
+            download_patterns = [
+                r'"@microsoft\.graph\.downloadUrl":\s*"([^"]+)"',
+                r'"downloadUrl":\s*"([^"]+)"',
+                r'"@content\.downloadUrl":\s*"([^"]+)"',
+                r'href="([^"]*download[^"]*)"',
+                r'"url":\s*"([^"]*download[^"]*)"'
+            ]
+            
+            for pattern in download_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    download_url = match.group(1)
+                    # Clean up URL encoding
+                    download_url = download_url.replace('\\u0026', '&')
+                    download_url = download_url.replace('\\/', '/')
+                    print(f"Found download URL via pattern: {download_url}")
+                    break
+            
+            if download_url:
+                return {
+                    'name': filename,
+                    'download_url': download_url,
+                    'size': 0,  # Will be determined during download
+                    'file_id': 'direct'
+                }
+            
+            # Alternative 1: Try adding download=1 parameter
+            if 'download=1' not in url and 'dl=1' not in url:
+                test_urls = [
+                    url + ('&' if '?' in url else '?') + 'download=1',
+                    url + ('&' if '?' in url else '?') + 'dl=1',
+                    url.replace('1drv.ms/', '1drv.ms/download/')
+                ]
+                
+                for test_url in test_urls:
+                    print(f"Trying download URL: {test_url}")
+                    try:
+                        test_response = self.session.head(test_url, allow_redirects=True)
+                        if test_response.status_code == 200:
+                            content_type = test_response.headers.get('content-type', '')
+                            if not content_type.startswith('text/html'):
+                                return {
+                                    'name': filename,
+                                    'download_url': test_url,
+                                    'size': int(test_response.headers.get('content-length', 0)),
+                                    'file_id': 'direct'
+                                }
+                    except Exception as e:
+                        print(f"Test URL failed: {e}")
+                        continue
+            
+            # Alternative 2: Look for iframe or embed URLs
+            iframe_match = re.search(r'<iframe[^>]+src="([^"]+)"', content, re.IGNORECASE)
+            if iframe_match:
+                iframe_url = iframe_match.group(1)
+                print(f"Found iframe URL, trying: {iframe_url}")
+                return self._get_direct_download_url(iframe_url)
+            
+        except Exception as e:
+            print(f"Error in direct download extraction: {e}")
         
         raise ValueError("Could not extract download URL")
 
