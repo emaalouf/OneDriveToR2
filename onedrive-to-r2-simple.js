@@ -62,6 +62,11 @@ class OneDriveToR2Simple {
         try {
             const page = await browser.newPage();
             
+            // Capture browser console output
+            page.on('console', msg => {
+                console.log(chalk.gray(`[Browser Console] ${msg.type()}: ${msg.text()}`));
+            });
+            
             // Set download path
             const client = await page.target().createCDPSession();
             await client.send('Page.setDownloadBehavior', {
@@ -85,13 +90,16 @@ class OneDriveToR2Simple {
                 return new Promise((resolve) => {
                     setTimeout(() => {
                         try {
-                            console.log('=== DEBUGGING: Searching for download buttons ===');
-                            console.log('Page title:', document.title);
-                            console.log('Current URL:', window.location.href);
+                            const debugInfo = {
+                                title: document.title,
+                                url: window.location.href,
+                                allButtons: [],
+                                attempts: []
+                            };
                             
                             // First, let's see ALL buttons on the page
                             const allButtons = document.querySelectorAll('button, a, [role="button"], .ms-CommandBarItem, [data-automation-id*="Command"]');
-                            console.log(`Found ${allButtons.length} total interactive elements`);
+                            debugInfo.totalButtons = allButtons.length;
                             
                             const buttonInfo = [];
                             for (let i = 0; i < Math.min(allButtons.length, 20); i++) {
@@ -107,7 +115,7 @@ class OneDriveToR2Simple {
                                 });
                             }
                             
-                            console.log('Button details:', JSON.stringify(buttonInfo, null, 2));
+                            debugInfo.allButtons = buttonInfo;
                             
                             // Try different download button selectors
                             const selectors = [
@@ -123,16 +131,15 @@ class OneDriveToR2Simple {
                             
                             for (const selector of selectors) {
                                 const button = document.querySelector(selector);
+                                debugInfo.attempts.push({ selector, found: !!button, disabled: button?.disabled });
                                 if (button && !button.disabled) {
-                                    console.log(`Found download button: ${selector}`);
                                     button.click();
-                                    resolve({ success: true, selector });
+                                    resolve({ success: true, selector, debugInfo });
                                     return;
                                 }
                             }
                             
                             // Try to select all files first, then look for download
-                            console.log('Trying to select all files first...');
                             const selectAllSelectors = [
                                 '[data-automation-id="selectAllCommand"]',
                                 'button[aria-label*="Select all"]',
@@ -142,10 +149,11 @@ class OneDriveToR2Simple {
                             let selectAllClicked = false;
                             for (const selector of selectAllSelectors) {
                                 const button = document.querySelector(selector);
+                                debugInfo.attempts.push({ type: 'selectAll', selector, found: !!button, disabled: button?.disabled });
                                 if (button && !button.disabled) {
-                                    console.log(`Found select all button: ${selector}`);
                                     button.click();
                                     selectAllClicked = true;
+                                    debugInfo.selectAllClicked = selector;
                                     break;
                                 }
                             }
@@ -155,10 +163,10 @@ class OneDriveToR2Simple {
                                 setTimeout(() => {
                                     for (const selector of selectors) {
                                         const button = document.querySelector(selector);
+                                        debugInfo.attempts.push({ type: 'afterSelectAll', selector, found: !!button, disabled: button?.disabled });
                                         if (button && !button.disabled) {
-                                            console.log(`Found download button after select all: ${selector}`);
                                             button.click();
-                                            resolve({ success: true, selector: selector + ' (after select all)' });
+                                            resolve({ success: true, selector: selector + ' (after select all)', debugInfo });
                                             return;
                                         }
                                     }
@@ -169,24 +177,50 @@ class OneDriveToR2Simple {
                                         const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
                                         
                                         if ((text.includes('download') || ariaLabel.includes('download')) && !button.disabled) {
-                                            console.log(`Found generic download button: ${text || ariaLabel}`);
                                             button.click();
-                                            resolve({ success: true, selector: 'generic', text: text || ariaLabel });
+                                            resolve({ success: true, selector: 'generic', text: text || ariaLabel, debugInfo });
                                             return;
                                         }
                                     }
                                     
-                                    resolve({ success: false, reason: 'No download button found even after select all', buttonCount: allButtons.length });
+                                    resolve({ success: false, reason: 'No download button found even after select all', debugInfo });
                                 }, 2000);
                             } else {
-                                resolve({ success: false, reason: 'No download or select all button found', buttonCount: allButtons.length });
+                                resolve({ success: false, reason: 'No download or select all button found', debugInfo });
                             }
                         } catch (error) {
-                            resolve({ success: false, reason: error.message });
+                            resolve({ success: false, reason: error.message, debugInfo: { error: error.message } });
                         }
                     }, 3000);
                 });
             });
+            
+            // Display debug information
+            if (downloadResult.debugInfo) {
+                console.log(chalk.blue('=== DEBUG INFORMATION ==='));
+                console.log(chalk.gray(`Page Title: ${downloadResult.debugInfo.title}`));
+                console.log(chalk.gray(`Page URL: ${downloadResult.debugInfo.url}`));
+                console.log(chalk.gray(`Total Buttons Found: ${downloadResult.debugInfo.totalButtons}`));
+                
+                if (downloadResult.debugInfo.allButtons && downloadResult.debugInfo.allButtons.length > 0) {
+                    console.log(chalk.gray('Available Buttons:'));
+                    downloadResult.debugInfo.allButtons.forEach((btn, i) => {
+                        console.log(chalk.gray(`  ${i + 1}. ${btn.tag} - "${btn.text}" (aria-label: "${btn.ariaLabel}", data-automation-id: "${btn.dataAutomationId}", disabled: ${btn.disabled})`));
+                    });
+                }
+                
+                if (downloadResult.debugInfo.attempts) {
+                    console.log(chalk.gray('Button Search Attempts:'));
+                    downloadResult.debugInfo.attempts.forEach((attempt, i) => {
+                        console.log(chalk.gray(`  ${i + 1}. ${attempt.type || 'download'} - ${attempt.selector} - Found: ${attempt.found}, Disabled: ${attempt.disabled}`));
+                    });
+                }
+                
+                if (downloadResult.debugInfo.selectAllClicked) {
+                    console.log(chalk.gray(`Select All Clicked: ${downloadResult.debugInfo.selectAllClicked}`));
+                }
+                console.log(chalk.blue('=== END DEBUG ==='));
+            }
             
             if (!downloadResult.success) {
                 throw new Error(`Could not find download button: ${downloadResult.reason}`);
