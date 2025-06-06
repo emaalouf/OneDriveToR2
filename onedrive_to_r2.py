@@ -161,17 +161,30 @@ class OneDriveToR2:
                 r'"fileName":\s*"([^"]+)"',
                 r'"title":\s*"([^"]+)"',
                 r'<title>([^<]+)</title>',
-                r'data-filename="([^"]+)"'
+                r'data-filename="([^"]+)"',
+                r'"displayName":\s*"([^"]+)"'
             ]
             
             for pattern in filename_patterns:
                 match = re.search(pattern, content, re.IGNORECASE)
                 if match:
-                    filename = match.group(1).strip()
-                    # Clean up filename from HTML entities and extra text
-                    filename = re.sub(r'\s*-\s*OneDrive.*$', '', filename)
-                    filename = re.sub(r'\s*\|\s*Microsoft.*$', '', filename)
-                    break
+                    potential_filename = match.group(1).strip()
+                    # Skip generic Microsoft/OneDrive titles
+                    if not re.match(r'^(Microsoft|OneDrive|Shared)', potential_filename, re.IGNORECASE):
+                        filename = potential_filename
+                        # Clean up filename from HTML entities and extra text
+                        filename = re.sub(r'\s*-\s*OneDrive.*$', '', filename)
+                        filename = re.sub(r'\s*\|\s*Microsoft.*$', '', filename)
+                        break
+            
+            # If we still have a generic name, try to extract from URL path
+            if filename in ["downloaded_file", "Microsoft OneDrive"]:
+                # Look for filename in the URL path or ID
+                url_match = re.search(r'/([^/?]+)\?', url)
+                if url_match:
+                    url_part = url_match.group(1)
+                    if len(url_part) > 5 and not re.match(r'^[A-Z0-9_-]+$', url_part):
+                        filename = url_part
             
             print(f"Extracted filename: {filename}")
             
