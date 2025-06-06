@@ -47,6 +47,16 @@ node onedrive-to-r2-simple.js "https://onedrive.live.com/...folder-url..." --pre
 node onedrive-to-r2-simple.js "https://onedrive.live.com/...folder-url..." --email "your@email.com" --password "yourpassword" --prefix "my-folder"
 ```
 
+### Single file download:
+```bash
+node onedrive-to-r2-file.js "https://1drv.ms/v/c/..." --prefix "my-files"
+```
+
+### Batch processing from file:
+```bash
+node onedrive-to-r2-file.js --file "urls.txt" --prefix "my-files"
+```
+
 ### Advanced usage (original script):
 ```bash
 node onedrive-to-r2.js "https://onedrive.live.com/...folder-url..." --prefix "my-folder"
@@ -85,7 +95,32 @@ Common issues and solutions:
 - **Timeout errors**: Check internet connection and OneDrive link validity
 - **R2 upload errors**: Verify R2 credentials and bucket permissions
 
+## Batch Processing
+
+You can process multiple OneDrive files at once by creating a text file with URLs:
+
+1. Create a text file (e.g., `urls.txt`) with one URL per line:
+```
+# Comments start with # or //
+https://1drv.ms/v/c/6a20c027ca1e5bb4/EZJ_UAb3XMRGqV-b8Up92pABG4n85nQpdHLJtpVBBxElWw?e=AOI6lv
+https://1drv.ms/v/c/another-file-id/...
+https://onedrive.live.com/...
+```
+
+2. Run batch processing:
+```bash
+node onedrive-to-r2-file.js --file "urls.txt" --prefix "my-files"
+```
+
+Features:
+- **Progress tracking**: Shows `[1/3]`, `[2/3]`, etc.
+- **Summary report**: Success/failure counts and details
+- **Comment support**: Lines starting with `#` or `//` are ignored
+- **Rate limiting**: 2-second delay between files to be respectful
+- **Error resilience**: Continues processing even if some files fail
+
 ## Scripts
 
 - `onedrive-to-r2-simple.js`: Simplified script for downloading entire folders as ZIP
+- `onedrive-to-r2-file.js`: Individual file processor with batch support  
 - `onedrive-to-r2.js`: Advanced script with individual file processing capabilities 

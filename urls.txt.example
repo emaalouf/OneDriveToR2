@@ -1,0 +1,13 @@
+# OneDrive URLs for batch processing
+# Lines starting with # or // are treated as comments and ignored
+# Put one URL per line
+
+# Example video file from Grounding folder
+https://1drv.ms/v/c/6a20c027ca1e5bb4/EZJ_UAb3XMRGqV-b8Up92pABG4n85nQpdHLJtpVBBxElWw?e=AOI6lv
+
+# You can add more URLs here, one per line
+# https://1drv.ms/v/c/another-file-id/...
+# https://onedrive.live.com/...
+
+// Another comment style supported
+# Add your OneDrive file URLs below: 
