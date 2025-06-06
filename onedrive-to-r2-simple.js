@@ -37,6 +37,75 @@ class OneDriveToR2Simple {
             console.error(chalk.red(`❌ Missing environment variables: ${missing.join(', ')}`));
             process.exit(1);
         }
+        
+        // Check for authentication credentials
+        if (process.env.ONEDRIVE_EMAIL && process.env.ONEDRIVE_PASSWORD) {
+            console.log(chalk.green('🔐 OneDrive authentication credentials found'));
+        } else {
+            console.log(chalk.yellow('⚠️  No OneDrive authentication credentials provided. Will attempt anonymous access.'));
+            console.log(chalk.gray('💡 Set ONEDRIVE_EMAIL and ONEDRIVE_PASSWORD environment variables for authenticated access.'));
+        }
+    }
+    
+    async authenticateIfNeeded(page) {
+        console.log(chalk.blue('🔐 Checking if authentication is required...'));
+        
+        const currentUrl = page.url();
+        if (currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com')) {
+            const email = process.env.ONEDRIVE_EMAIL;
+            const password = process.env.ONEDRIVE_PASSWORD;
+            
+            if (!email || !password) {
+                throw new Error('Authentication required but ONEDRIVE_EMAIL or ONEDRIVE_PASSWORD not provided. Please set these environment variables.');
+            }
+            
+            console.log(chalk.blue(`🔑 Logging in with email: ${email.substring(0, 3)}***${email.substring(email.lastIndexOf('@'))}`));
+            
+            try {
+                // Wait for email input and enter email
+                await page.waitForSelector('input[type="email"], input[name="loginfmt"], #i0116', { timeout: 10000 });
+                await page.type('input[type="email"], input[name="loginfmt"], #i0116', email);
+                
+                // Click next button
+                await page.click('#idSIButton9, input[type="submit"], button[type="submit"]');
+                
+                // Wait for password input
+                await page.waitForSelector('input[type="password"], input[name="passwd"], #i0118', { timeout: 10000 });
+                await page.type('input[type="password"], input[name="passwd"], #i0118', password);
+                
+                // Click sign in button
+                await page.click('#idSIButton9, input[type="submit"], button[type="submit"]');
+                
+                // Wait for potential "Stay signed in?" prompt and handle it
+                try {
+                    await page.waitForSelector('#idSIButton9', { timeout: 5000 });
+                    // Check if it's the "Stay signed in?" prompt
+                    const buttonText = await page.$eval('#idSIButton9', el => el.textContent);
+                    if (buttonText && buttonText.toLowerCase().includes('yes')) {
+                        console.log(chalk.gray('📝 Accepting "Stay signed in?" prompt'));
+                        await page.click('#idSIButton9');
+                    }
+                } catch (error) {
+                    // No stay signed in prompt, continue
+                }
+                
+                // Wait for navigation to complete
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+                
+                const finalUrl = page.url();
+                if (finalUrl.includes('login.live.com') || finalUrl.includes('login.microsoftonline.com')) {
+                    throw new Error('Authentication failed - still on login page. Please check your credentials.');
+                }
+                
+                console.log(chalk.green('✅ Successfully authenticated!'));
+                
+            } catch (error) {
+                console.error(chalk.red(`❌ Authentication failed: ${error.message}`));
+                throw error;
+            }
+        } else {
+            console.log(chalk.green('✅ No authentication required'));
+        }
     }
     
     async downloadFolderAsZip(url) {
@@ -76,6 +145,10 @@ class OneDriveToR2Simple {
             
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            
+            // Handle authentication if needed
+            await this.authenticateIfNeeded(page);
+            
             await new Promise(resolve => setTimeout(resolve, 5000));
             
             // Take screenshot for debugging
@@ -355,17 +428,31 @@ program
     .version('1.0.0')
     .argument('[url]', 'OneDrive folder URL')
     .option('-p, --prefix <prefix>', 'R2 prefix')
+    .option('-e, --email <email>', 'OneDrive email address')
+    .option('-w, --password <password>', 'OneDrive password')
     .action(async (url, options) => {
         if (!url) {
             console.error(chalk.red('❌ Please provide a URL'));
             console.log(chalk.yellow('💡 Example: node onedrive-to-r2-simple.js "https://onedrive.live.com/...folder-url..." --prefix "videos/2024"'));
+            console.log(chalk.yellow('💡 With authentication: node onedrive-to-r2-simple.js "https://onedrive.live.com/..." --email "your@email.com" --password "yourpassword"'));
             return;
+        }
+        
+        // Set authentication environment variables if provided via command line
+        if (options.email) {
+            process.env.ONEDRIVE_EMAIL = options.email;
+        }
+        if (options.password) {
+            process.env.ONEDRIVE_PASSWORD = options.password;
         }
         
         console.log(chalk.blue('🚀 Starting OneDrive Folder to R2 ZIP transfer...'));
         console.log(chalk.gray(`📎 URL: ${url}`));
         if (options.prefix) {
             console.log(chalk.gray(`📁 R2 Prefix: ${options.prefix}`));
+        }
+        if (process.env.ONEDRIVE_EMAIL) {
+            console.log(chalk.gray(`🔐 Authentication: ${process.env.ONEDRIVE_EMAIL.substring(0, 3)}***${process.env.ONEDRIVE_EMAIL.substring(process.env.ONEDRIVE_EMAIL.lastIndexOf('@'))}`));
         }
         
         const downloader = new OneDriveToR2Simple();
