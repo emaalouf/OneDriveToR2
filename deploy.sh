@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 APP_NAME="onedrive-to-r2"
 APP_DIR="/opt/$APP_NAME"
 SERVICE_USER="$APP_NAME"
-PYTHON_VERSION="3.9"
+PYTHON_VERSION="3"
 
 # Functions
 print_status() {
@@ -55,13 +55,10 @@ apt install -y \
     ufw \
     htop
 
-# Install specific Python version if needed
-if ! command -v python$PYTHON_VERSION &> /dev/null; then
-    print_status "Installing Python $PYTHON_VERSION..."
-    apt install -y software-properties-common
-    add-apt-repository ppa:deadsnakes/ppa -y
-    apt update
-    apt install -y python$PYTHON_VERSION python$PYTHON_VERSION-venv python$PYTHON_VERSION-pip
+# Ensure Python 3 is available (should be installed with the packages above)
+if ! command -v python3 &> /dev/null; then
+    print_error "Python 3 installation failed"
+    exit 1
 fi
 
 # Create application user
