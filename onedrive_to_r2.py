@@ -142,24 +142,26 @@ class OneDriveToR2:
         except Exception as e:
             print(f"Graph API error: {e}")
         
-        # For testing: prioritize browser extraction for better results
-        if PYPPETEER_AVAILABLE:
-            print("🚀 Trying browser-based extraction for better file detection...")
-            try:
-                result = self.extract_with_browser_sync(original_url)
-                # If browser extraction succeeds, use it
-                return result
-            except Exception as browser_error:
-                print(f"Browser extraction failed: {browser_error}")
-                print("Falling back to direct extraction...")
-        
-        # Fallback: try to get download URL directly
-        print("Using direct download URL extraction...")
+        # Fallback: try to get download URL directly first (more reliable on VPS)
+        print("Trying direct download URL extraction...")
         try:
-            return self._get_direct_download_url(original_url)
+            result = self._get_direct_download_url(original_url)
+            # Check if we got a reasonable file size, if not try browser
+            return result
         except Exception as direct_error:
             print(f"Direct extraction failed: {direct_error}")
-            raise ValueError(f"All extraction methods failed. Direct: {direct_error}")
+            
+            # Try browser extraction as fallback
+            if PYPPETEER_AVAILABLE:
+                print("🚀 Trying browser-based extraction as fallback...")
+                try:
+                    result = self.extract_with_browser_sync(original_url)
+                    return result
+                except Exception as browser_error:
+                    print(f"Browser extraction failed: {browser_error}")
+                    raise ValueError(f"All extraction methods failed. Direct: {direct_error}, Browser: {browser_error}")
+            else:
+                raise ValueError(f"Direct extraction failed and pyppeteer not available: {direct_error}")
 
     def _extract_sharepoint_info(self, url: str) -> Dict[str, Any]:
         """Extract info from SharePoint OneDrive URLs."""
@@ -254,12 +256,17 @@ class OneDriveToR2:
                     'file_id': 'direct'
                 }
             
-            # Alternative 1: Try adding download=1 parameter
+            # Alternative 1: Try different download parameters  
             if 'download=1' not in url and 'dl=1' not in url:
                 test_urls = [
+                    # Try direct download parameter
                     url + ('&' if '?' in url else '?') + 'download=1',
+                    # Try OneDrive API endpoint transformation
+                    url.replace('1drv.ms/v/', '1drv.ms/download/').replace('?e=', '&download=1&e='),
+                    # Try alternative download parameter
                     url + ('&' if '?' in url else '?') + 'dl=1',
-                    url.replace('1drv.ms/', '1drv.ms/download/')
+                    # Try adding authkey and direct download
+                    url + ('&' if '?' in url else '?') + 'download=1&authkey=!',
                 ]
                 
                 for test_url in test_urls:
@@ -300,17 +307,37 @@ class OneDriveToR2:
         
         browser = None
         try:
-            # Launch headless browser
+            # Launch headless browser with VPS-friendly options
             browser = await launch(
                 headless=True,
+                ignoreHTTPSErrors=True,
                 args=[
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas',
                     '--disable-gpu',
-                    '--window-size=1920x1080'
-                ]
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor',
+                    '--disable-extensions',
+                    '--disable-plugins',
+                    '--disable-images',
+                    '--disable-default-apps',
+                    '--disable-background-timer-throttling',
+                    '--disable-renderer-backgrounding',
+                    '--disable-backgrounding-occluded-windows',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--memory-pressure-off',
+                    '--max_old_space_size=4096',
+                    '--window-size=1280x720',
+                    '--virtual-time-budget=30000'
+                ],
+                executablePath=None,  # Use bundled Chromium
+                handleSIGINT=False,
+                handleSIGTERM=False,
+                handleSIGHUP=False
             )
             
             page = await browser.newPage()
@@ -484,7 +511,36 @@ class OneDriveToR2:
         if not PYPPETEER_AVAILABLE:
             raise ValueError("Pyppeteer not available")
         
-        # Run the async function
+        # Check if there's already a running loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is running, we need to use a different approach
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self._run_browser_in_thread, url)
+                    return future.result(timeout=60)
+            else:
+                return loop.run_until_complete(self._extract_with_browser(url))
+        except RuntimeError:
+            # No event loop exists, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self._extract_with_browser(url))
+            finally:
+                # Don't close the loop immediately, let it clean up properly
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except Exception:
+                    pass
+                finally:
+                    loop.close()
+
+    def _run_browser_in_thread(self, url: str) -> Dict[str, Any]:
+        """Run browser extraction in a separate thread with its own event loop."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
