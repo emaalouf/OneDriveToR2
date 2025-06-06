@@ -12,9 +12,18 @@ from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import tempfile
 import json
+import asyncio
 from typing import Optional, Dict, Any
 from tqdm import tqdm
 from dotenv import load_dotenv
+
+# Optional pyppeteer import
+try:
+    from pyppeteer import launch
+    PYPPETEER_AVAILABLE = True
+except ImportError:
+    PYPPETEER_AVAILABLE = False
+    print("💡 Tip: Install pyppeteer for better OneDrive link handling: pip install pyppeteer")
 
 # Load environment variables
 load_dotenv()
@@ -135,13 +144,41 @@ class OneDriveToR2:
         
         # Fallback: try to get download URL directly
         print("Falling back to direct download URL extraction...")
-        return self._get_direct_download_url(original_url)
+        try:
+            return self._get_direct_download_url(original_url)
+        except Exception as direct_error:
+            print(f"Direct extraction failed: {direct_error}")
+            
+            # Final fallback: try browser-based extraction
+            if PYPPETEER_AVAILABLE:
+                print("🚀 Trying browser-based extraction as final fallback...")
+                try:
+                    return self.extract_with_browser_sync(original_url)
+                except Exception as browser_error:
+                    print(f"Browser extraction also failed: {browser_error}")
+                    raise ValueError(f"All extraction methods failed. Direct: {direct_error}, Browser: {browser_error}")
+            else:
+                raise ValueError(f"Direct extraction failed and pyppeteer not available: {direct_error}")
 
     def _extract_sharepoint_info(self, url: str) -> Dict[str, Any]:
         """Extract info from SharePoint OneDrive URLs."""
-        # This is more complex and may require different handling
-        # For now, try the direct approach
-        return self._get_direct_download_url(url)
+        print("Extracting SharePoint OneDrive info...")
+        
+        try:
+            return self._get_direct_download_url(url)
+        except Exception as direct_error:
+            print(f"Direct SharePoint extraction failed: {direct_error}")
+            
+            # Try browser-based extraction for SharePoint
+            if PYPPETEER_AVAILABLE:
+                print("🌐 Trying browser extraction for SharePoint...")
+                try:
+                    return self.extract_with_browser_sync(url)
+                except Exception as browser_error:
+                    print(f"Browser SharePoint extraction failed: {browser_error}")
+                    raise ValueError(f"SharePoint extraction failed. Direct: {direct_error}, Browser: {browser_error}")
+            else:
+                raise ValueError(f"SharePoint direct extraction failed and pyppeteer not available: {direct_error}")
 
     def _get_direct_download_url(self, url: str) -> Dict[str, Any]:
         """Get direct download URL by parsing the page."""
@@ -252,6 +289,207 @@ class OneDriveToR2:
             print(f"Error in direct download extraction: {e}")
         
         raise ValueError("Could not extract download URL")
+
+    async def _extract_with_browser(self, url: str) -> Dict[str, Any]:
+        """Extract OneDrive info using headless browser (pyppeteer)."""
+        if not PYPPETEER_AVAILABLE:
+            raise ValueError("Pyppeteer not available - install with: pip install pyppeteer")
+        
+        print("🌐 Using browser-based extraction (pyppeteer)...")
+        
+        browser = None
+        try:
+            # Launch headless browser
+            browser = await launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
+                    '--window-size=1920x1080'
+                ]
+            )
+            
+            page = await browser.newPage()
+            
+            # Set user agent to avoid detection
+            await page.setUserAgent(
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            )
+            
+            print(f"🔍 Loading page: {url}")
+            
+            # Navigate to URL
+            await page.goto(url, {'waitUntil': 'networkidle2', 'timeout': 30000})
+            
+            # Wait a bit for dynamic content
+            await asyncio.sleep(3)
+            
+            # Try to find download button or link
+            download_info = await page.evaluate('''
+                () => {
+                    // Look for download links and file info
+                    const downloadSelectors = [
+                        'a[href*="download"]',
+                        'button[data-automation-id="downloadCommand"]',
+                        'button[aria-label*="Download"]',
+                        '[data-automation-id="downloadButton"]',
+                        'a[data-automation-id="downloadCommand"]'
+                    ];
+                    
+                    let downloadUrl = null;
+                    let filename = 'unknown_file';
+                    
+                    // Try to find download URL
+                    for (const selector of downloadSelectors) {
+                        const element = document.querySelector(selector);
+                        if (element) {
+                            downloadUrl = element.href || element.getAttribute('href');
+                            if (downloadUrl) {
+                                console.log('Found download URL via selector:', selector);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Try to find filename
+                    const filenameSelectors = [
+                        '[data-automation-id="fieldRendererFileName"] span',
+                        '.ms-DetailsList-cell [role="gridcell"] span',
+                        'h1[data-automation-id="contentHeader"]',
+                        '.od-ItemName',
+                        '.ms-DocumentCard-title',
+                        '[data-automation-id="name"]'
+                    ];
+                    
+                    for (const selector of filenameSelectors) {
+                        const element = document.querySelector(selector);
+                        if (element && element.textContent && element.textContent.trim()) {
+                            filename = element.textContent.trim();
+                            console.log('Found filename via selector:', selector, filename);
+                            break;
+                        }
+                    }
+                    
+                    // Look for file info in page data
+                    const scripts = document.querySelectorAll('script');
+                    for (const script of scripts) {
+                        const content = script.textContent || '';
+                        if (content.includes('"name"') && content.includes('"@microsoft.graph.downloadUrl"')) {
+                            try {
+                                const matches = content.match(/"@microsoft\.graph\.downloadUrl":\s*"([^"]+)"/);
+                                if (matches) {
+                                    downloadUrl = matches[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+                                    console.log('Found download URL in script data');
+                                }
+                                
+                                const nameMatches = content.match(/"name":\s*"([^"]+)"/);
+                                if (nameMatches) {
+                                    filename = nameMatches[1];
+                                    console.log('Found filename in script data:', filename);
+                                }
+                            } catch (e) {
+                                console.log('Error parsing script data:', e);
+                            }
+                        }
+                    }
+                    
+                    return {
+                        downloadUrl: downloadUrl,
+                        filename: filename,
+                        pageUrl: window.location.href,
+                        pageTitle: document.title
+                    };
+                }
+            ''')
+            
+            print(f"📄 Page info: {download_info}")
+            
+            if download_info['downloadUrl']:
+                # Clean up the download URL
+                download_url = download_info['downloadUrl']
+                if download_url.startswith('//'):
+                    download_url = 'https:' + download_url
+                
+                return {
+                    'name': download_info['filename'],
+                    'download_url': download_url,
+                    'size': 0,  # Will be determined during download
+                    'file_id': 'browser_extracted'
+                }
+            
+            # If no direct download URL found, try clicking download button
+            print("🔘 Trying to trigger download...")
+            
+            # Look for download button and click it
+            download_triggered = await page.evaluate('''
+                () => {
+                    const downloadSelectors = [
+                        'button[data-automation-id="downloadCommand"]',
+                        'button[aria-label*="Download"]',
+                        '[data-automation-id="downloadButton"]',
+                        'a[data-automation-id="downloadCommand"]',
+                        'button[title*="Download"]'
+                    ];
+                    
+                    for (const selector of downloadSelectors) {
+                        const button = document.querySelector(selector);
+                        if (button && !button.disabled) {
+                            console.log('Clicking download button:', selector);
+                            button.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            
+            if download_triggered:
+                print("⏳ Waiting for download URL...")
+                # Wait for download to be triggered and capture the URL
+                await asyncio.sleep(2)
+                
+                # Monitor network requests for download URLs
+                # This is a simplified approach - in practice, you might want to intercept network requests
+                pass
+            
+            # Try alternative: add download=1 parameter
+            current_url = await page.url()
+            if 'download=1' not in current_url:
+                test_url = current_url + ('&' if '?' in current_url else '?') + 'download=1'
+                print(f"🔄 Trying with download parameter: {test_url}")
+                
+                return {
+                    'name': download_info['filename'],
+                    'download_url': test_url,
+                    'size': 0,
+                    'file_id': 'browser_with_param'
+                }
+            
+            raise ValueError("Could not extract download URL using browser")
+            
+        except Exception as e:
+            print(f"❌ Browser extraction error: {e}")
+            raise
+        
+        finally:
+            if browser:
+                await browser.close()
+
+    def extract_with_browser_sync(self, url: str) -> Dict[str, Any]:
+        """Synchronous wrapper for browser-based extraction."""
+        if not PYPPETEER_AVAILABLE:
+            raise ValueError("Pyppeteer not available")
+        
+        # Run the async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self._extract_with_browser(url))
+        finally:
+            loop.close()
 
     def download_file(self, file_info: Dict[str, Any], temp_dir: str) -> str:
         """Download file from OneDrive to temporary directory."""
