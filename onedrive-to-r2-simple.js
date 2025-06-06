@@ -342,7 +342,7 @@ class OneDriveToR2Simple {
         }
     }
     
-    async waitForDownload(downloadPath, timeout = 120000) {
+    async waitForDownload(downloadPath, timeout = 120000000) {
         const startTime = Date.now();
         let progressBar = null;
         let lastSize = 0;
