@@ -1,8 +1,0 @@
-# OneDrive Links File
-# Add one OneDrive link per line
-# Lines starting with # are ignored
-
-# Example OneDrive links (replace with your actual links):
-# https://onedrive.live.com/download?cid=ABC123&resid=ABC123%21456&authkey=xyz
-# https://1drv.ms/u/s!shortlinkexample
-# https://yourcompany-my.sharepoint.com/:u:/g/personal/user_company_com/EaBcDefGhIjKlMnOpQrStUvWxYz?e=AbCdEf 
