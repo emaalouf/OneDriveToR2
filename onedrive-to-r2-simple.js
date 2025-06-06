@@ -344,29 +344,113 @@ class OneDriveToR2Simple {
     
     async waitForDownload(downloadPath, timeout = 120000) {
         const startTime = Date.now();
+        let progressBar = null;
+        let lastSize = 0;
+        let stableCount = 0;
+        let currentFile = null;
+        
+        console.log(chalk.blue('📊 Monitoring download progress...'));
         
         while (Date.now() - startTime < timeout) {
             try {
                 const files = await fs.readdir(downloadPath);
-                const downloadedFiles = files.filter(file => 
+                
+                // Look for downloading files (.crdownload) and completed files
+                const downloadingFiles = files.filter(file => file.endsWith('.crdownload'));
+                const completedFiles = files.filter(file => 
                     !file.endsWith('.crdownload') && 
                     !file.includes('debug') &&
                     file.length > 0
                 );
                 
-                if (downloadedFiles.length > 0) {
-                    const file = downloadedFiles[0];
-                    console.log(chalk.green(`✅ Download completed: ${file}`));
+                if (completedFiles.length > 0) {
+                    // Download completed
+                    if (progressBar) {
+                        progressBar.stop();
+                        console.log(''); // New line after progress bar
+                    }
+                    const file = completedFiles[0];
+                    const finalStats = await fs.stat(path.join(downloadPath, file));
+                    console.log(chalk.green(`✅ Download completed: ${file} (${this.formatBytes(finalStats.size)})`));
                     return file;
                 }
                 
+                if (downloadingFiles.length > 0) {
+                    // Download in progress
+                    const downloadingFile = downloadingFiles[0];
+                    const filePath = path.join(downloadPath, downloadingFile);
+                    const stats = await fs.stat(filePath);
+                    const currentSize = stats.size;
+                    
+                    if (!progressBar && currentSize > 0) {
+                        // Initialize progress bar
+                        progressBar = new cliProgress.SingleBar({
+                            format: 'Downloading |{bar}| {percentage}% | {value}/{total} | {speed} | ETA: {eta}s',
+                            barCompleteChar: '█',
+                            barIncompleteChar: '░',
+                            hideCursor: true
+                        });
+                        
+                        // Start with current size, we'll update total when we can estimate it
+                        progressBar.start(currentSize * 2, currentSize); // Initial guess
+                        currentFile = downloadingFile;
+                        console.log(chalk.gray(`📁 Downloading: ${downloadingFile.replace('.crdownload', '')}`));
+                    }
+                    
+                    if (progressBar) {
+                        // Calculate download speed
+                        const timeDiff = (Date.now() - startTime) / 1000;
+                        const speed = timeDiff > 0 ? this.formatBytes(currentSize / timeDiff) + '/s' : '0 B/s';
+                        
+                        // Update progress bar
+                        if (currentSize > progressBar.getTotal()) {
+                            // File is larger than expected, increase total
+                            progressBar.setTotal(currentSize * 1.5);
+                        }
+                        
+                        progressBar.update(currentSize, {
+                            speed: speed,
+                            total: this.formatBytes(progressBar.getTotal()),
+                            value: this.formatBytes(currentSize)
+                        });
+                        
+                        // Check if download has stalled (size hasn't changed)
+                        if (currentSize === lastSize) {
+                            stableCount++;
+                        } else {
+                            stableCount = 0;
+                        }
+                        lastSize = currentSize;
+                        
+                        // If size stable for too long and file is reasonably sized, might be complete
+                        if (stableCount > 5 && currentSize > 1024 * 1024) { // 1MB minimum and stable for 5 seconds
+                            console.log(chalk.yellow('\n⚠️  Download appears complete but file still has .crdownload extension'));
+                            console.log(chalk.gray('🔄 Waiting for browser to finalize...'));
+                        }
+                    }
+                } else if (!progressBar) {
+                    // No files yet, show waiting message
+                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                    if (elapsed % 5 === 0 && elapsed > 0) { // Every 5 seconds
+                        console.log(chalk.gray(`⏳ Waiting for download to start... (${elapsed}s)`));
+                    }
+                }
+                
             } catch (error) {
-                // Directory might not exist yet
+                // Directory might not exist yet or file access error
+                if (!error.message.includes('ENOENT')) {
+                    console.log(chalk.yellow(`⚠️  File access error: ${error.message}`));
+                }
             }
             
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
+        // Timeout occurred
+        if (progressBar) {
+            progressBar.stop();
+            console.log(''); // New line after progress bar
+        }
         throw new Error('Download timeout');
     }
     
@@ -375,8 +459,19 @@ class OneDriveToR2Simple {
         
         const fileStream = fs.createReadStream(filePath);
         const fileStats = await fs.stat(filePath);
+        const totalSize = fileStats.size;
         
-        console.log(chalk.gray(`📊 Size: ${this.formatBytes(fileStats.size)}`));
+        console.log(chalk.gray(`📊 Size: ${this.formatBytes(totalSize)}`));
+        
+        // Create upload progress bar
+        const uploadProgressBar = new cliProgress.SingleBar({
+            format: 'Uploading |{bar}| {percentage}% | {value}/{total} | {speed} | ETA: {eta}s',
+            barCompleteChar: '█',
+            barIncompleteChar: '░',
+            hideCursor: true
+        });
+        
+        uploadProgressBar.start(totalSize, 0);
         
         const upload = new Upload({
             client: this.s3Client,
@@ -387,8 +482,34 @@ class OneDriveToR2Simple {
             }
         });
         
-        await upload.done();
-        console.log(chalk.green(`✅ Uploaded: ${r2Key}`));
+        // Track upload progress
+        let uploadedBytes = 0;
+        const startTime = Date.now();
+        
+        upload.on('httpUploadProgress', (progress) => {
+            if (progress.loaded !== undefined) {
+                uploadedBytes = progress.loaded;
+                const elapsed = (Date.now() - startTime) / 1000;
+                const speed = elapsed > 0 ? this.formatBytes(uploadedBytes / elapsed) + '/s' : '0 B/s';
+                
+                uploadProgressBar.update(uploadedBytes, {
+                    speed: speed,
+                    total: this.formatBytes(totalSize),
+                    value: this.formatBytes(uploadedBytes)
+                });
+            }
+        });
+        
+        try {
+            await upload.done();
+            uploadProgressBar.stop();
+            console.log(''); // New line after progress bar
+            console.log(chalk.green(`✅ Uploaded: ${r2Key} (${this.formatBytes(totalSize)})`));
+        } catch (error) {
+            uploadProgressBar.stop();
+            console.log(''); // New line after progress bar
+            throw error;
+        }
     }
     
     formatBytes(bytes) {
