@@ -150,7 +150,7 @@ class R2ToApiVideo {
     async processFile(r2Key, options = {}) {
         const fileName = path.basename(r2Key);
         const tempDir = path.join(require('os').tmpdir(), 'r2-to-apivideo');
-        const localPath = path.join(tempDir, fileName);
+        const localPath = path.join(tempDir, `${Date.now()}-${fileName}`); // Add timestamp to avoid conflicts
         
         try {
             console.log(chalk.blue(`\n🔄 Processing: ${r2Key}`));
@@ -171,17 +171,46 @@ class R2ToApiVideo {
                 customMetadata: options.metadata
             });
             
-            // Clean up temporary file
-            await fs.remove(localPath);
+            // Clean up temporary file immediately after successful upload
+            await this.cleanupTempFile(localPath);
+            console.log(chalk.gray(`🧹 Cleaned up temporary file`));
             
             return uploadResult;
             
         } catch (error) {
-            // Clean up on error
-            if (await fs.pathExists(localPath)) {
-                await fs.remove(localPath);
-            }
+            // Always clean up on error, with extra logging
+            await this.cleanupTempFile(localPath, true);
             throw error;
+        }
+    }
+    
+    async cleanupTempFile(filePath, isError = false) {
+        try {
+            if (await fs.pathExists(filePath)) {
+                await fs.remove(filePath);
+                if (isError) {
+                    console.log(chalk.gray(`🧹 Cleaned up temporary file after error`));
+                }
+            }
+        } catch (cleanupError) {
+            console.warn(chalk.yellow(`⚠️  Warning: Could not clean up temporary file ${filePath}: ${cleanupError.message}`));
+        }
+    }
+    
+    async cleanupTempDirectory() {
+        try {
+            const tempDir = path.join(require('os').tmpdir(), 'r2-to-apivideo');
+            if (await fs.pathExists(tempDir)) {
+                // List files in temp directory
+                const files = await fs.readdir(tempDir);
+                if (files.length > 0) {
+                    console.log(chalk.gray(`🧹 Cleaning up ${files.length} remaining temporary files...`));
+                    await fs.remove(tempDir);
+                    console.log(chalk.gray(`✅ Temporary directory cleaned`));
+                }
+            }
+        } catch (cleanupError) {
+            console.warn(chalk.yellow(`⚠️  Warning: Could not clean up temporary directory: ${cleanupError.message}`));
         }
     }
     
@@ -237,6 +266,9 @@ class R2ToApiVideo {
             if (failed > 0) {
                 console.log(chalk.red(`   Failed: ${failed}`));
             }
+            
+            // Final cleanup of temp directory
+            await this.cleanupTempDirectory();
             
             return results;
             
@@ -347,11 +379,57 @@ program
             console.log(chalk.cyan(`Video ID: ${result.videoId}`));
             console.log(chalk.cyan(`Player URL: ${result.playerUrl}`));
             
+            // Cleanup after single file transfer
+            await transferTool.cleanupTempDirectory();
+            
         } catch (error) {
             console.error(chalk.red(`❌ Single file transfer failed: ${error.message}`));
+            
+            // Ensure cleanup on error
+            const transferTool = new R2ToApiVideo();
+            await transferTool.cleanupTempDirectory();
+            
             process.exit(1);
         }
     });
+
+// Global cleanup on process exit
+async function globalCleanup() {
+    try {
+        const tempDir = path.join(require('os').tmpdir(), 'r2-to-apivideo');
+        if (await fs.pathExists(tempDir)) {
+            await fs.remove(tempDir);
+            console.log(chalk.gray('\n🧹 Final cleanup completed'));
+        }
+    } catch (error) {
+        // Silent cleanup failure on exit
+    }
+}
+
+// Register cleanup handlers
+process.on('SIGINT', async () => {
+    console.log(chalk.yellow('\n⚠️  Received interrupt signal, cleaning up...'));
+    await globalCleanup();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log(chalk.yellow('\n⚠️  Received terminate signal, cleaning up...'));
+    await globalCleanup();
+    process.exit(0);
+});
+
+process.on('uncaughtException', async (error) => {
+    console.error(chalk.red('\n❌ Uncaught exception occurred:'), error);
+    await globalCleanup();
+    process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+    console.error(chalk.red('\n❌ Unhandled promise rejection:'), reason);
+    await globalCleanup();
+    process.exit(1);
+});
 
 // Handle no command
 if (process.argv.length === 2) {
