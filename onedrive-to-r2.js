@@ -76,8 +76,9 @@ class OneDriveToR2 {
         try {
             const page = await browser.newPage();
             
-            // Set download path
-            await page._client.send('Page.setDownloadBehavior', {
+            // Set download path using modern Puppeteer API
+            const client = await page.target().createCDPSession();
+            await client.send('Page.setDownloadBehavior', {
                 behavior: 'allow',
                 downloadPath: downloadPath
             });
@@ -88,12 +89,70 @@ class OneDriveToR2 {
             
             // Check if this is a folder view by looking for multiple files
             const isFolder = await page.evaluate(() => {
+                // Multiple detection methods for folder view
                 const fileRows = document.querySelectorAll('[data-automation-id="listItem"], .od-ItemTile, [role="gridcell"]');
-                return fileRows.length > 1;
+                const listView = document.querySelector('[data-automation-id="detailsList"]');
+                const folderIndicators = document.querySelectorAll('[data-icon-name="FabricFolder"], .ms-Icon--FabricFolder');
+                
+                console.log('Detection results:', {
+                    fileRowsCount: fileRows.length,
+                    hasListView: !!listView,
+                    folderIndicators: folderIndicators.length,
+                    url: window.location.href
+                });
+                
+                return fileRows.length > 1 || !!listView || folderIndicators.length > 0;
             });
             
             if (isFolder) {
-                console.log(chalk.blue('📁 Detected folder view, downloading all files...'));
+                console.log(chalk.blue('📁 Detected folder view, attempting folder download...'));
+                
+                // First try to download the entire folder as ZIP
+                const folderDownloadResult = await page.evaluate(() => {
+                    // Look for folder download button
+                    const folderDownloadSelectors = [
+                        'button[data-automation-id="downloadCommand"]',
+                        '[data-automation-id="downloadButton"]',
+                        'button[aria-label*="Download"]',
+                        'button[title*="Download"]',
+                        '.ms-CommandBarItem-link[aria-label*="Download"]',
+                        '[data-icon-name="Download"]'
+                    ];
+                    
+                    for (const selector of folderDownloadSelectors) {
+                        const button = document.querySelector(selector);
+                        if (button && !button.disabled) {
+                            console.log('Found folder download button:', selector);
+                            button.click();
+                            return { success: true, type: 'folder-zip' };
+                        }
+                    }
+                    
+                    return { success: false, reason: 'No folder download button found' };
+                });
+                
+                if (folderDownloadResult.success) {
+                    console.log(chalk.green('✅ Folder download initiated, waiting for ZIP file...'));
+                    
+                    try {
+                        // Wait for ZIP download to complete
+                        const zipFile = await this.waitForDownload(downloadPath, 'folder.zip', 60000);
+                        
+                        return {
+                            isFolder: true,
+                            isFolderZip: true,
+                            zipFile: zipFile,
+                            downloadPath: downloadPath,
+                            extractedBy: 'browser-download'
+                        };
+                        
+                    } catch (zipError) {
+                        console.log(chalk.yellow(`⚠️  Folder ZIP download failed: ${zipError.message}`));
+                        console.log(chalk.blue('📄 Falling back to individual file downloads...'));
+                    }
+                }
+                
+                console.log(chalk.blue('📄 Downloading individual files...'));
                 
                 const folderFiles = await page.evaluate(() => {
                     const files = [];
