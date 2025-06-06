@@ -142,26 +142,24 @@ class OneDriveToR2:
         except Exception as e:
             print(f"Graph API error: {e}")
         
-        # Fallback: try to get download URL directly first (more reliable on VPS)
-        print("Trying direct download URL extraction...")
+        # Try browser extraction first for better file detection (now that dependencies are installed)
+        if PYPPETEER_AVAILABLE:
+            print("🚀 Trying browser-based extraction for full file download...")
+            try:
+                result = self.extract_with_browser_sync(original_url)
+                return result
+            except Exception as browser_error:
+                print(f"Browser extraction failed: {browser_error}")
+                print("Falling back to direct extraction...")
+        
+        # Fallback: try to get download URL directly
+        print("Using direct download URL extraction...")
         try:
             result = self._get_direct_download_url(original_url)
-            # Check if we got a reasonable file size, if not try browser
             return result
         except Exception as direct_error:
             print(f"Direct extraction failed: {direct_error}")
-            
-            # Try browser extraction as fallback
-            if PYPPETEER_AVAILABLE:
-                print("🚀 Trying browser-based extraction as fallback...")
-                try:
-                    result = self.extract_with_browser_sync(original_url)
-                    return result
-                except Exception as browser_error:
-                    print(f"Browser extraction failed: {browser_error}")
-                    raise ValueError(f"All extraction methods failed. Direct: {direct_error}, Browser: {browser_error}")
-            else:
-                raise ValueError(f"Direct extraction failed and pyppeteer not available: {direct_error}")
+            raise ValueError(f"All extraction methods failed. Direct: {direct_error}")
 
     def _extract_sharepoint_info(self, url: str) -> Dict[str, Any]:
         """Extract info from SharePoint OneDrive URLs."""
@@ -407,13 +405,13 @@ class OneDriveToR2:
                         const content = script.textContent || '';
                         if (content.includes('"name"') && content.includes('"@microsoft.graph.downloadUrl"')) {
                             try {
-                                const matches = content.match(/"@microsoft\.graph\.downloadUrl":\s*"([^"]+)"/);
+                                const matches = content.match(/"@microsoft\\.graph\\.downloadUrl":\\s*"([^"]+)"/);
                                 if (matches) {
-                                    downloadUrl = matches[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+                                    downloadUrl = matches[1].replace(/\\\\u0026/g, '&').replace(/\\\\\//g, '/');
                                     console.log('Found download URL in script data');
                                 }
                                 
-                                const nameMatches = content.match(/"name":\s*"([^"]+)"/);
+                                const nameMatches = content.match(/"name":\\s*"([^"]+)"/);
                                 if (nameMatches) {
                                     filename = nameMatches[1];
                                     console.log('Found filename in script data:', filename);
