@@ -7,7 +7,16 @@
     "start": "node onedrive-to-r2.js",
     "test": "node onedrive-to-r2.js --test",
     "dev": "node --inspect onedrive-to-r2.js",
-    "r2-to-apivideo": "node r2-to-apivideo.js"
+    "r2-to-apivideo": "node r2-to-apivideo.js",
+    "pm2:start": "node pm2-manager.js start",
+    "pm2:stop": "node pm2-manager.js stop",
+    "pm2:restart": "node pm2-manager.js restart",
+    "pm2:delete": "node pm2-manager.js delete",
+    "pm2:logs": "node pm2-manager.js logs",
+    "pm2:status": "node pm2-manager.js status",
+    "pm2:monit": "node pm2-manager.js monit",
+    "pm2:cleanup": "node pm2-manager.js cleanup",
+    "pm2:ecosystem": "pm2 start ecosystem.config.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.540.0",
@@ -21,7 +30,8 @@
     "chalk": "^4.1.2",
     "fs-extra": "^11.2.0",
     "path": "^0.12.7",
-    "url": "^0.11.3"
+    "url": "^0.11.3",
+    "pm2": "^5.3.0"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -33,7 +43,8 @@
     "download",
     "upload",
     "automation",
-    "api.video"
+    "api.video",
+    "pm2"
   ],
   "author": "OneDrive to R2 Tool",
   "license": "MIT"
