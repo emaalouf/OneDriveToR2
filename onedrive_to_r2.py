@@ -327,6 +327,16 @@ class OneDriveToR2:
             print("💡 Tip: Use quotes around the URL: python3 onedrive_to_r2.py \"your-url-here\"")
             return False
         
+        # Check for folder URLs
+        if 'onedrive.live.com' in onedrive_url and ('o=OneUp' in onedrive_url or 'sb=' in onedrive_url or 'parId=' in onedrive_url):
+            print("❌ This appears to be a OneDrive folder URL, not a file URL")
+            print("💡 To download files:")
+            print("   1. Go to your OneDrive folder in the browser")
+            print("   2. Right-click on individual files → 'Copy link' or 'Share'")
+            print("   3. Use those direct file links with this script")
+            print("   4. Or put multiple file links in links.txt and use --file option")
+            return False
+        
         try:
             # Extract file information
             file_info = self.extract_onedrive_info(onedrive_url)
