@@ -69,7 +69,7 @@ class OneDriveToR2 {
             const page = await browser.newPage();
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-            await page.waitForTimeout(3000);
+            await new Promise(resolve => setTimeout(resolve, 3000));
             
             const downloadInfo = await page.evaluate(() => {
                 let downloadUrl = null;
@@ -132,29 +132,96 @@ class OneDriveToR2 {
     async extractDirect(url) {
         console.log(chalk.blue('🔗 Using direct extraction...'));
         
-        const filename = path.basename(new URL(url).pathname) || 'download';
-        const downloadUrl = url + (url.includes('?') ? '&' : '?') + 'download=1';
+        // Try to follow redirects to get actual OneDrive URL
+        let finalUrl = url;
+        try {
+            const response = await axios.head(url, { 
+                maxRedirects: 5,
+                timeout: 10000,
+                validateStatus: () => true,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            finalUrl = response.request.res?.responseUrl || url;
+            console.log(chalk.gray(`🔄 Redirected to: ${finalUrl}`));
+        } catch (error) {
+            console.log(chalk.yellow(`⚠️  Redirect failed: ${error.message}`));
+        }
+        
+        // Extract filename from URL path
+        let filename = 'unknown_file';
+        try {
+            const urlObj = new URL(finalUrl);
+            const pathParts = urlObj.pathname.split('/').filter(p => p);
+            filename = pathParts[pathParts.length - 1] || 'download';
+            
+            // Clean filename
+            filename = filename.replace(/[?#].*$/, '');
+            if (!filename || filename === 'download') {
+                filename = 'onedrive_file';
+            }
+        } catch (error) {
+            console.log(chalk.yellow(`⚠️  Filename extraction failed: ${error.message}`));
+        }
+        
+        // Try multiple download URL patterns
+        const downloadUrls = [
+            finalUrl + (finalUrl.includes('?') ? '&' : '?') + 'download=1',
+            finalUrl.replace('/view', '/download'),
+            finalUrl.replace('onedrive.live.com', 'api.onedrive.com') + '/content'
+        ];
         
         return {
             name: filename,
-            downloadUrl: downloadUrl,
+            downloadUrls: downloadUrls, // Multiple URLs to try
             extractedBy: 'direct'
         };
     }
     
     async downloadFile(fileInfo, tempDir) {
-        const { name, downloadUrl } = fileInfo;
+        const { name, downloadUrl, downloadUrls } = fileInfo;
         const filePath = path.join(tempDir, name);
         
         console.log(chalk.blue(`⬇️  Downloading: ${name}`));
         
-        const response = await axios({
-            method: 'GET',
-            url: downloadUrl,
-            responseType: 'stream',
-            timeout: 300000,
-            maxRedirects: 5
-        });
+        // Try multiple URLs if available
+        const urlsToTry = downloadUrls || [downloadUrl];
+        let response = null;
+        let lastError = null;
+        
+        for (let i = 0; i < urlsToTry.length; i++) {
+            const url = urlsToTry[i];
+            console.log(chalk.gray(`📡 Trying URL ${i + 1}/${urlsToTry.length}: ${url}`));
+            
+            try {
+                response = await axios({
+                    method: 'GET',
+                    url: url,
+                    responseType: 'stream',
+                    timeout: 300000,
+                    maxRedirects: 5,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                });
+                
+                console.log(chalk.green(`✅ Success with URL ${i + 1}`));
+                break;
+                
+            } catch (error) {
+                lastError = error;
+                console.log(chalk.yellow(`⚠️  URL ${i + 1} failed: ${error.message}`));
+                
+                if (i === urlsToTry.length - 1) {
+                    throw new Error(`All download URLs failed. Last error: ${error.message}`);
+                }
+            }
+        }
+        
+        if (!response) {
+            throw new Error(`Download failed: ${lastError?.message || 'No response'}`);
+        }
         
         const totalSize = parseInt(response.headers['content-length'] || '0');
         console.log(chalk.gray(`📊 Size: ${this.formatBytes(totalSize)}`));
