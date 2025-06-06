@@ -1,52 +1,17 @@
 {
-  "name": "onedrive-to-r2",
+  "name": "lesson-uploader",
   "version": "1.0.0",
-  "description": "Download files from OneDrive links and upload to Cloudflare R2",
-  "main": "onedrive-to-r2.js",
+  "description": "Upload API.video lessons to MySQL database",
+  "main": "lesson-uploader.js",
   "scripts": {
-    "start": "node onedrive-to-r2.js",
-    "test": "node onedrive-to-r2.js --test",
-    "dev": "node --inspect onedrive-to-r2.js",
-    "r2-to-apivideo": "node r2-to-apivideo.js",
-    "pm2:start": "node pm2-manager.js start",
-    "pm2:stop": "node pm2-manager.js stop",
-    "pm2:restart": "node pm2-manager.js restart",
-    "pm2:delete": "node pm2-manager.js delete",
-    "pm2:logs": "node pm2-manager.js logs",
-    "pm2:status": "node pm2-manager.js status",
-    "pm2:monit": "node pm2-manager.js monit",
-    "pm2:cleanup": "node pm2-manager.js cleanup",
-    "pm2:ecosystem": "pm2 start ecosystem.config.js"
+    "start": "node lesson-uploader.js",
+    "upload": "node lesson-uploader.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.540.0",
-    "@aws-sdk/lib-storage": "^3.540.0",
-    "@api.video/nodejs-client": "^2.4.2",
-    "axios": "^1.6.7",
-    "puppeteer": "^22.2.0",
-    "dotenv": "^16.4.5",
-    "cli-progress": "^3.12.0",
-    "commander": "^12.0.0",
-    "chalk": "^4.1.2",
-    "fs-extra": "^11.2.0",
-    "glob": "^10.3.10",
-    "path": "^0.12.7",
-    "url": "^0.11.3",
-    "pm2": "^5.3.0"
+    "mysql2": "^3.6.5",
+    "dotenv": "^16.3.1"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "keywords": [
-    "onedrive",
-    "cloudflare",
-    "r2",
-    "download",
-    "upload",
-    "automation",
-    "api.video",
-    "pm2"
-  ],
-  "author": "OneDrive to R2 Tool",
+  "keywords": ["api.video", "mysql", "lessons", "upload"],
+  "author": "",
   "license": "MIT"
 } 
